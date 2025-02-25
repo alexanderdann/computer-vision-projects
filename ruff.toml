@@ -4,6 +4,7 @@ lint.select = ["ALL"]
 
 lint.ignore = [
     "CPY001",   # open-source anyways
+    "ANN001",    
 ]
 
 [lint.isort]
