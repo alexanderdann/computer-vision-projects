@@ -1,0 +1,12 @@
+lint.preview = true
+
+lint.select = ["ALL"]
+
+lint.ignore = [
+    "CPY001",   # open-source anyways
+]
+
+[lint.isort]
+known-first-party = [
+    "nnx"
+]
