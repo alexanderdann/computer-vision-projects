@@ -5,6 +5,7 @@ lint.select = ["ALL"]
 lint.ignore = [
     "CPY001",   # open-source anyways
     "ANN001",    
+    "FA102",    # we force to have Python 3.12 as a minimum
 ]
 
 [lint.isort]
