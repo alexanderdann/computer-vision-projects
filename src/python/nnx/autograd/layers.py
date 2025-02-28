@@ -26,7 +26,7 @@ def sanity_checks(func: callable) -> callable:
 
         _, _, _, num_channels = inputs.data.shape
 
-        if num_channels != self._in_dim:
+        if hasattr(self, "_in_dim") and (num_channels != self._in_dim):
             msg = (
                 "Expected number of channels",
                 f"to be {self._in_dim} and not {num_channels}.",
@@ -286,9 +286,9 @@ class Conv2D(Layer):
             outputs, requires_grad=inputs.requires_grad or self._weights.requires_grad,
         )
 
-        self._prev = {inputs, self._weights}
+        outputs.prev = {inputs, self._weights}
         if self._bias is not None:
-            self._prev.add(self._bias)
+            outputs.prev.add(self._bias)
 
         def _backward() -> None:
             dx, dweight, dbias = self._conv2d_backward(
@@ -296,8 +296,8 @@ class Conv2D(Layer):
                 self._weights.data,
                 self._bias.data if self._bias is not None else None,
                 outputs.grad,
-                self._stride,
                 self._padding,
+                self._stride,
             )
             if inputs.requires_grad:
                 inputs.grad = dx if inputs.grad is None else inputs.grad + dx
