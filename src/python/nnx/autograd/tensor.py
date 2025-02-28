@@ -44,6 +44,33 @@ class Tensor:
     def grad(self, value: np.ndarray | None) -> None:
         self._grad = value
 
+    @property
+    def prev(self) -> set:
+        """Return the previous nodes."""
+        return self._prev
+
+    @prev.setter
+    def prev(self, value: set) -> None:
+        self._prev = value
+
+    def __matmul__(self, other: "Tensor") -> "Tensor":
+        """Overloading for matrix multiplaction.
+
+        Returns:
+            Tensor after the applied operation.
+
+        """
+        return Tensor(self.data @ other.data, self.requires_grad)
+
+    def __add__(self, other: "Tensor") -> "Tensor":
+        """Overloading for addition operation.
+
+        Returns:
+            Tensor after the applied operation.
+
+        """
+        return Tensor(self.data + other.data, self.requires_grad)
+
     def register_backward(self, func: callable) -> None:
         """Register the closure to compute backward pass."""
         self._backward = func
