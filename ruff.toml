@@ -6,6 +6,8 @@ lint.ignore = [
     "CPY001",   # open-source anyways
     "ANN001",    
     "FA102",    # we force to have Python 3.12 as a minimum
+    "T201",     # not production code
+    "T203",     # not production code
 ]
 
 [lint.isort]
