@@ -105,8 +105,12 @@ class BetterUnionFind:
             return
 
         if self._sizes[root1] < self._sizes[root2]:
+            if self._verbose:
+                pprint(f"Updating {root1} -> {root2}")
             self._lookup[root1] = root2
             self._sizes[root2] += self._sizes[root1]
         else:
+            if self._verbose:
+                pprint(f"Updating {root2} -> {root1}")
             self._lookup[root2] = root1
             self._sizes[root1] += self._sizes[root2]
