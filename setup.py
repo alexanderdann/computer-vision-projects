@@ -11,7 +11,7 @@ setup(
     install_requires=[
         "numpy==1.26.4",
         "ruff==0.9.7",
-        # "tqdm==2.2.3",
+        "tqdm==2.2.3",
         "torch==2.2.0",
         "torchvision==0.17.0",
     ],
