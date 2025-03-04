@@ -95,6 +95,7 @@ class Conv2D(Layer):
             bias: whether we want to use the bias term.
 
         """
+        super().__init__()
         self._in_dim = in_dim
         self._out_dim = out_dim
         self._padding = padding
@@ -114,7 +115,12 @@ class Conv2D(Layer):
             size=(out_dim, *kernel_size, in_dim),
         )
         self._weights = Tensor(weights, requires_grad=True)
-        self._bias = Tensor(bias_, requires_grad=True) if bias else None
+        self._parameters.append(self._weights)
+
+        self._bias = None
+        if bias:
+            self._bias = Tensor(bias_, requires_grad=True)
+            self._parameters.append(self._bias)
 
     @staticmethod
     def _conv2d_forward(
@@ -287,32 +293,31 @@ class Conv2D(Layer):
             outputs, requires_grad=inputs.requires_grad or self._weights.requires_grad,
         )
 
-        outputs.prev = {inputs, self._weights}
-        if self._bias is not None:
-            outputs.prev.add(self._bias)
+        if inputs.requires_grad or self._weights.requires_grad:
+            outputs.prev = {inputs, self._weights}
+            if self._bias is not None:
+                outputs.prev.add(self._bias)
 
-        def _backward() -> None:
-            dx, dweight, dbias = self._conv2d_backward(
-                inputs.data,
-                self._weights.data,
-                self._bias.data if self._bias is not None else None,
-                outputs.grad,
-                self._padding,
-                self._stride,
-            )
-            if inputs.requires_grad:
-                inputs.grad = dx if inputs.grad is None else inputs.grad + dx
-            if self._weights.requires_grad:
-                self._weights.grad = (
-                    dweight
-                    if self._weights.grad is None
-                    else self._weights.grad + dweight
-                )
-            if self._bias is not None and self._bias.requires_grad:
-                self._bias.grad = (
-                    dbias if self._bias.grad is None else self._bias.grad + dbias
-                )
+            def _backward() -> None:
+                if outputs.grad is not None:
+                    dx, dweight, dbias = self._conv2d_backward(
+                        inputs.data,
+                        self._weights.data,
+                        self._bias.data if self._bias is not None else None,
+                        outputs.grad,
+                        self._padding,
+                        self._stride,
+                    )
 
-        outputs.register_backward(_backward)
+                    if inputs.requires_grad:
+                        inputs.grad = dx if inputs.grad is None else inputs.grad + dx
+
+                    if self._weights.requires_grad:
+                        self._weights.grad = dweight if self._weights.grad is None else self._weights.grad + dweight  # noqa: E501
+
+                    if self._bias is not None and self._bias.requires_grad and dbias is not None:  # noqa: E501
+                        self._bias.grad = dbias if self._bias.grad is None else self._bias.grad + dbias  # noqa: E501
+
+            outputs.register_backward(_backward)
 
         return outputs

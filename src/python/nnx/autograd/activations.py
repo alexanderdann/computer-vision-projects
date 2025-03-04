@@ -13,7 +13,7 @@ class ReLU(Layer):
         """C'tor of ReLU."""
         super().__init__()
 
-    def forward(self, inputs: Tensor) -> Tensor:
+    def forward(self, inputs: Tensor) -> Tensor:  # noqa: PLR6301
         """Forward pass of ReLU activation.
 
         Args:
@@ -28,15 +28,17 @@ class ReLU(Layer):
             requires_grad=inputs.requires_grad,
         )
 
-        self._prev = {inputs}
+        if inputs.requires_grad:
+            outputs.prev = {inputs}
 
-        def _backward() -> None:
-            # Derivative of ReLU: 1 if x > 0, 0 otherwise
-            grad = (inputs.data > 0).astype(np.float64) * outputs.grad
-            if inputs.requires_grad:
-                inputs.grad = grad if inputs.grad is None else inputs.grad + grad
+            def _backward() -> None:
+                if outputs.grad is not None:
+                    # Derivative of ReLU: 1 if x > 0, 0 otherwise
+                    grad = (inputs.data > 0).astype(np.float64) * outputs.grad
+                    inputs.grad = grad if inputs.grad is None else inputs.grad + grad
 
-        outputs.register_backward(_backward)
+            outputs.register_backward(_backward)
+
         return outputs
 
 
@@ -64,8 +66,7 @@ class Softmax(Layer):
 
         """
         # Shifting for numerical stability by the max.
-        # This does not alter the results. Taking some arbitrary x would lead to e^-x
-        # in both numerator and denominator which cancels.
+        # This does not alter the results as it cancels out in numerator and denominator.
         shifted = inputs.data - np.max(inputs.data, axis=self._axis, keepdims=True)
         exp_values = np.exp(shifted)
         softmax_output = exp_values / np.sum(exp_values, axis=self._axis, keepdims=True)
@@ -75,28 +76,32 @@ class Softmax(Layer):
             requires_grad=inputs.requires_grad,
         )
 
-        self._prev = {inputs}
+        if inputs.requires_grad:
+            outputs.prev = {inputs}
 
-        def _backward() -> None:
-            dx = np.zeros_like(inputs.data)
-            batch_size = inputs.data.shape[0]
+            def _backward() -> None:
+                if outputs.grad is not None:
+                    # The Jacobian of softmax is complex
+                    # For each sample in the batch, compute proper Jacobian
+                    batch_size = inputs.data.shape[0]
+                    dx = np.zeros_like(inputs.data)
 
-            for batch_idx in range(batch_size):
-                softmax: np.ndarray = softmax_output[batch_idx]
-                dout: np.ndarray = outputs.grad[batch_idx]
+                    for batch_idx in range(batch_size):
+                        softmax = softmax_output[batch_idx]
+                        dout = outputs.grad[batch_idx]
 
-                softmax_reshaped = softmax.reshape(-1, 1)
-                dout_reshaped = dout.reshape(-1, 1)
+                        # Reshaping for matrix operations
+                        softmax_reshaped = softmax.reshape(-1, 1)
+                        dout_reshaped = dout.reshape(-1, 1)
 
-                # Since derivative is f(x_i)*(kronecker(i,j)-f(x_j)) -> Jacobi
-                # Mind the cases i=j and i!=j
-                jacobian = np.diagflat(softmax)
-                jacobian -= np.dot(softmax_reshaped, softmax_reshaped.T)
+                        # Jacobian of softmax: diag(softmax) - softmax * softmax^T
+                        jacobian = np.diagflat(softmax) - np.dot(softmax_reshaped, softmax_reshaped.T)
 
-                dx[batch_idx] = np.dot(jacobian, dout_reshaped).reshape(softmax.shape)
+                        # Apply chain rule: dx = J * dout
+                        dx[batch_idx] = np.dot(jacobian, dout_reshaped).reshape(softmax.shape)
 
-            if inputs.requires_grad:
-                inputs.grad = dx if inputs.grad is None else inputs.grad + dx
+                    inputs.grad = dx if inputs.grad is None else inputs.grad + dx
 
-        outputs.register_backward(_backward)
+            outputs.register_backward(_backward)
+
         return outputs

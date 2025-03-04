@@ -55,23 +55,60 @@ class Tensor:
 
     @property
     def T(self) -> "Tensor":  # noqa: N802
-        """Transpose the given entry.
+        """Transpose the given tensor.
 
         Returns:
-            Transposed version of the data.
+            Transposed version of the tensor.
 
         """
-        print(self.data.T.shape)
-        return Tensor(self.data.T, requires_grad=self.requires_grad)
+        result = Tensor(self.data.T, requires_grad=self.requires_grad)
+
+        if self.requires_grad:
+            result.prev = {self}
+
+            def _backward() -> None:
+                if result.grad is not None:
+                    # Gradient of transpose is just the transpose of the gradient
+                    grad = result.grad.T
+                    self.grad = grad if self.grad is None else self.grad + grad
+
+            result.register_backward(_backward)
+
+        return result
 
     def __matmul__(self, other: "Tensor") -> "Tensor":
-        """Overloading for matrix multiplaction.
+        """Overloading for matrix multiplication.
+
+        Args:
+            other: The tensor to multiply with.
 
         Returns:
-            Tensor after the applied operation.
+            Result of matrix multiplication.
 
         """
-        return Tensor(self.data @ other.data, requires_grad=self.requires_grad)
+        result = Tensor(
+            self.data @ other.data,
+            requires_grad=(self.requires_grad or other.requires_grad),
+        )
+
+        if self.requires_grad or other.requires_grad:
+            result.prev = {self, other}
+
+            def _backward() -> None:
+                if result.grad is not None:
+                    if self.requires_grad:
+                        # Gradient with respect to self: dL/dA = dL/dC @ B.T
+                        grad = result.grad @ other.data.T
+                        self.grad = grad if self.grad is None else self.grad + grad
+
+                    if other.requires_grad:
+                        # Gradient with respect to other: dL/dB = A.T @ dL/dC
+                        grad = self.data.T @ result.grad
+                        other.grad = grad if other.grad is None else other.grad + grad
+
+            result.register_backward(_backward)
+
+        return result
 
     def __add__(self, other: "Tensor") -> "Tensor":
         """Overloading for addition operation.
