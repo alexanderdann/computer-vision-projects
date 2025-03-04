@@ -53,6 +53,17 @@ class Tensor:
     def prev(self, value: set) -> None:
         self._prev = value
 
+    @property
+    def T(self) -> "Tensor":  # noqa: N802
+        """Transpose the given entry.
+
+        Returns:
+            Transposed version of the data.
+
+        """
+        print(self.data.T.shape)
+        return Tensor(self.data.T, requires_grad=self.requires_grad)
+
     def __matmul__(self, other: "Tensor") -> "Tensor":
         """Overloading for matrix multiplaction.
 
@@ -60,7 +71,7 @@ class Tensor:
             Tensor after the applied operation.
 
         """
-        return Tensor(self.data @ other.data, self.requires_grad)
+        return Tensor(self.data @ other.data, requires_grad=self.requires_grad)
 
     def __add__(self, other: "Tensor") -> "Tensor":
         """Overloading for addition operation.
@@ -69,7 +80,7 @@ class Tensor:
             Tensor after the applied operation.
 
         """
-        return Tensor(self.data + other.data, self.requires_grad)
+        return Tensor(self.data + other.data, requires_grad=self.requires_grad)
 
     def register_backward(self, func: callable) -> None:
         """Register the closure to compute backward pass."""

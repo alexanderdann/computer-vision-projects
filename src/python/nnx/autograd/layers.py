@@ -1,17 +1,18 @@
 """Meta class for layers to import."""
 
 from abc import abstractmethod
+from typing import Callable
 
 import numpy as np
 
 from nnx.autograd.tensor import Tensor
 
 
-def sanity_checks(func: callable) -> callable:
+def sanity_checks(func: Callable) -> Callable:
     """Check the input to have correct properties.
 
     Args:
-        func: a callable used to evaluate np arrays.
+        func: a Callable used to evaluate np arrays.
 
     Returns:
         The wrapper function.
@@ -54,7 +55,7 @@ class Layer:
     def forward(self, x: Tensor) -> Tensor:
         """Logic of the forward pass."""
 
-    @sanity_checks
+    # @sanity_checks
     def __call__(self, inputs: Tensor) -> Tensor:
         """Wrap the forward call.
 
@@ -76,7 +77,7 @@ class Conv2D(Layer):
         padding: int = 0,
         stride: int = 1,
         *,
-        initialiser: callable,
+        initialiser: Callable,
         bias: bool = True,
     ) -> None:
         """C'tor of Conv2D.
