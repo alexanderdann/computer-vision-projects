@@ -149,12 +149,21 @@ class Tensor:
         """Register the closure to compute backward pass."""
         self._backward = func
 
-    def backward(self, grad: np.ndarray | None = None) -> None:
+    def backward(self, grad: np.ndarray | None = None, visited: None = None) -> None:
         """Compute the backward pass."""
+        if visited is None:
+            visited = set()
+
+        if self in visited:
+            return
+
+        visited.add(self)
+
         if grad is None:
             grad = np.ones_like(self._data)
-        # Accumulate gradients.
+
         self._grad = grad if self._grad is None else self._grad + grad
         self._backward()
+
         for t in self._prev:
-            t.backward()
+            t.backward(visited=visited)
