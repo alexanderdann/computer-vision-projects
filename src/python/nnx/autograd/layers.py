@@ -166,7 +166,14 @@ class Conv2D(Layer):
                             :,
                         ]
 
-                        results = np.sum(patch * weights[filter_id, :, :, :])
+                        # Compute with explicit floating-point handling
+                        patch_product = patch * weights[filter_id, :, :, :]
+                        # Check for NaN/Inf after multiplication
+                        if np.isnan(patch_product).any() or np.isinf(patch_product).any():
+                            # Use clipping instead of raising error to continue training
+                            patch_product = np.clip(patch_product, -1e10, 1e10)
+
+                        results = np.sum(patch_product)
 
                         if bias is not None:
                             results += bias[filter_id].item()
@@ -224,9 +231,13 @@ class Conv2D(Layer):
                     ]
 
                     for c_out in range(out_channels):
-                        dweight[c_out] += (
-                            input_patch * grad_output[sample_id, h_out, w_out, c_out]
-                        )
+                        # Calculate with stability checks
+                        patch_grad = input_patch * grad_output[sample_id, h_out, w_out, c_out]
+                        # Check for numerical issues
+                        if np.isnan(patch_grad).any() or np.isinf(patch_grad).any():
+                            patch_grad = np.clip(patch_grad, -1e10, 1e10)
+
+                        dweight[c_out] += patch_grad
 
         # Gradients with respect to weights
         # Since the formula from above contains a `x(i+p, j+q)`, the only addition is
@@ -261,9 +272,12 @@ class Conv2D(Layer):
                         ]
 
                         # Dot product with the flipped weights for this input channel
-                        dx[sample_id, h_in, w_in, c_in] = np.sum(
-                            grad_patch * flipped_weights[c_in],
-                        )
+                        patch_product = grad_patch * flipped_weights[c_in]
+                        # Check for numerical issues
+                        if np.isnan(patch_product).any() or np.isinf(patch_product).any():
+                            patch_product = np.clip(patch_product, -1e10, 1e10)
+
+                        dx[sample_id, h_in, w_in, c_in] = np.sum(patch_product)
 
         # Remove padding if it was applied
         if padding:

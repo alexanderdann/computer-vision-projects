@@ -114,10 +114,36 @@ class Tensor:
         """Overloading for addition operation.
 
         Returns:
-            Tensor after the applied operation.
+            A newly created Tensor after addition.
 
         """
-        return Tensor(self.data + other.data, requires_grad=self.requires_grad)
+        result = Tensor(
+            self.data + other.data,
+            requires_grad=(self.requires_grad or other.requires_grad),
+        )
+
+        if self.requires_grad or other.requires_grad:
+            result.prev = {self, other}
+
+            def _backward() -> None:
+                if result.grad is not None:
+                    if self.requires_grad:
+                        self.grad = (
+                            result.grad
+                            if self.grad is None
+                            else self.grad + result.grad
+                        )
+
+                    if other.requires_grad:
+                        other.grad = (
+                            result.grad
+                            if other.grad is None
+                            else other.grad + result.grad
+                        )
+
+            result.register_backward(_backward)
+
+        return result
 
     def register_backward(self, func: callable) -> None:
         """Register the closure to compute backward pass."""

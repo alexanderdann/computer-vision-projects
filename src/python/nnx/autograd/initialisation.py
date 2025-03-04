@@ -28,6 +28,6 @@ def xavier_uniform(
     """
     limit = gain * np.sqrt(6 / (fan_in + fan_out))
     weights = rng.uniform(-limit, limit, size=size)
-    bias = np.zeros((fan_out, 1))
+    bias = np.zeros((fan_out,))
 
     return weights, bias
