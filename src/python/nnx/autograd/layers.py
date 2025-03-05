@@ -66,6 +66,37 @@ class Layer:
         return self.forward(inputs)
 
 
+class Sequential(Layer):
+    """Sequentially applies a list of layers."""
+
+    def __init__(self, *layers: Layer) -> None:
+        """Initialize with a sequence of layers."""
+        super().__init__()
+        self.layers = layers
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through all layers in sequence.
+
+        Returns:
+            The transformed entry based on the defined chain of transforms.
+
+        """
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+    @property
+    def parameters(self) -> list[Tensor]:
+        """Get all parameters from all layers."""
+        params = []
+        for layer in self.layers:
+            if hasattr(layer, "parameters"):
+                params.extend(layer.parameters)
+            else:
+                print(f"Skpping layer {layer}")
+        return params
+
+
 class Conv2D(Layer):
     """Resembles a 2D Convolution."""
 
@@ -123,7 +154,7 @@ class Conv2D(Layer):
             self._parameters.append(self._bias)
 
     @staticmethod
-    def _conv2d_forward(
+    def _conv2d_forward(  # noqa: PLR0914
         inputs: np.ndarray,
         weights: np.ndarray,
         bias: np.ndarray | None,
@@ -169,7 +200,10 @@ class Conv2D(Layer):
                         # Compute with explicit floating-point handling
                         patch_product = patch * weights[filter_id, :, :, :]
                         # Check for NaN/Inf after multiplication
-                        if np.isnan(patch_product).any() or np.isinf(patch_product).any():
+                        if (
+                            np.isnan(patch_product).any()
+                            or np.isinf(patch_product).any()
+                        ):
                             # Use clipping instead of raising error to continue training
                             patch_product = np.clip(patch_product, -1e10, 1e10)
 
@@ -183,7 +217,7 @@ class Conv2D(Layer):
         return outputs
 
     @staticmethod
-    def _conv2d_backward(  # noqa: C901, PLR0913, PLR0914, PLR0917
+    def _conv2d_backward(  # noqa: C901, PLR0912, PLR0913, PLR0914, PLR0917
         inputs: np.ndarray,
         weights: np.ndarray,
         bias: np.ndarray | None,
@@ -232,7 +266,9 @@ class Conv2D(Layer):
 
                     for c_out in range(out_channels):
                         # Calculate with stability checks
-                        patch_grad = input_patch * grad_output[sample_id, h_out, w_out, c_out]
+                        patch_grad = (
+                            input_patch * grad_output[sample_id, h_out, w_out, c_out]
+                        )
                         # Check for numerical issues
                         if np.isnan(patch_grad).any() or np.isinf(patch_grad).any():
                             patch_grad = np.clip(patch_grad, -1e10, 1e10)
@@ -274,7 +310,10 @@ class Conv2D(Layer):
                         # Dot product with the flipped weights for this input channel
                         patch_product = grad_patch * flipped_weights[c_in]
                         # Check for numerical issues
-                        if np.isnan(patch_product).any() or np.isinf(patch_product).any():
+                        if (
+                            np.isnan(patch_product).any()
+                            or np.isinf(patch_product).any()
+                        ):
                             patch_product = np.clip(patch_product, -1e10, 1e10)
 
                         dx[sample_id, h_in, w_in, c_in] = np.sum(patch_product)
@@ -304,7 +343,8 @@ class Conv2D(Layer):
         )
 
         outputs: Tensor = Tensor(
-            outputs, requires_grad=inputs.requires_grad or self._weights.requires_grad,
+            outputs,
+            requires_grad=inputs.requires_grad or self._weights.requires_grad,
         )
 
         if inputs.requires_grad or self._weights.requires_grad:
@@ -327,11 +367,126 @@ class Conv2D(Layer):
                         inputs.grad = dx if inputs.grad is None else inputs.grad + dx
 
                     if self._weights.requires_grad:
-                        self._weights.grad = dweight if self._weights.grad is None else self._weights.grad + dweight  # noqa: E501
+                        self._weights.grad = (
+                            dweight
+                            if self._weights.grad is None
+                            else self._weights.grad + dweight
+                        )
 
-                    if self._bias is not None and self._bias.requires_grad and dbias is not None:  # noqa: E501
-                        self._bias.grad = dbias if self._bias.grad is None else self._bias.grad + dbias  # noqa: E501
+                    if (
+                        self._bias is not None
+                        and self._bias.requires_grad
+                        and dbias is not None
+                    ):
+                        self._bias.grad = (
+                            dbias
+                            if self._bias.grad is None
+                            else self._bias.grad + dbias
+                        )
 
             outputs.register_backward(_backward)
+
+        return outputs
+
+
+class Reshape(Layer):
+    """Layer to reshape tensor while preserving gradient flow."""
+
+    def __init__(self, target_shape) -> None:
+        """Initialize with target shape.
+
+        If an element of target_shape is -1, it will be inferred from the input.
+
+        Args:
+            target_shape: Shape to reshape to. Can include -1 for inference.
+
+        """
+        super().__init__()
+        self.target_shape = target_shape
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        """Forward pass to reshape tensor.
+
+        Args:
+            inputs: Input tensor to reshape
+
+        Returns:
+            Reshaped tensor with gradient connections preserved
+
+        """
+        # Store original shape for backward pass
+        original_shape = inputs.data.shape
+
+        # Perform reshape
+        reshaped_data = inputs.data.reshape(self.target_shape)
+        outputs = Tensor(reshaped_data, requires_grad=inputs.requires_grad)
+
+        if inputs.requires_grad:
+            # Connect the computational graph
+            outputs.prev = {inputs}
+
+            def _backward() -> None:
+                if outputs.grad is not None:
+                    # Reshape gradient back to original shape
+                    grad = outputs.grad.reshape(original_shape)
+                    inputs.grad = grad if inputs.grad is None else inputs.grad + grad
+
+            outputs.register_backward(_backward)
+
+        return outputs
+
+
+class Linear(Layer):
+    """Implements an linear transformation."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        *,
+        initialiser: Callable,
+        bias: bool = True,
+    ) -> None:
+        """C'tor of the Linear layer.
+
+        Args:
+            in_dim: count of input neurons.
+            out_dim: count of output neurons.
+            initialiser: callable to initialise layers.
+            bias: whether we want to use the bias term.
+
+        """
+        super().__init__()
+        self._in_dim = in_dim
+        self._out_dim = out_dim
+
+        weights, bias_ = initialiser(
+            in_dim,
+            out_dim,
+            size=(out_dim, in_dim),
+        )
+
+        self._weights = Tensor(weights, requires_grad=True)
+        self._parameters.append(self._weights)
+
+        self._bias = None
+        if bias:
+            self._bias = Tensor(bias_, requires_grad=True)
+            self._parameters.append(self._bias)
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        """Compute the transformation given the inputs.
+
+        Args:
+            inputs: Tensor which needs to be transformed.
+
+        Returns:
+            Transformed Tensor.
+
+        """
+        outputs: Tensor = inputs @ self._weights.T
+
+        if self._bias is not None:
+            outputs += self._bias
 
         return outputs

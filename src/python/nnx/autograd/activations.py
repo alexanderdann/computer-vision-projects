@@ -66,7 +66,8 @@ class Softmax(Layer):
 
         """
         # Shifting for numerical stability by the max.
-        # This does not alter the results as it cancels out in numerator and denominator.
+        # This does not alter the results as it cancels
+        # out in numerator and denominator.
         shifted = inputs.data - np.max(inputs.data, axis=self._axis, keepdims=True)
         exp_values = np.exp(shifted)
         softmax_output = exp_values / np.sum(exp_values, axis=self._axis, keepdims=True)
@@ -90,15 +91,15 @@ class Softmax(Layer):
                         softmax = softmax_output[batch_idx]
                         dout = outputs.grad[batch_idx]
 
-                        # Reshaping for matrix operations
                         softmax_reshaped = softmax.reshape(-1, 1)
                         dout_reshaped = dout.reshape(-1, 1)
 
-                        # Jacobian of softmax: diag(softmax) - softmax * softmax^T
-                        jacobian = np.diagflat(softmax) - np.dot(softmax_reshaped, softmax_reshaped.T)
+                        jacobian = np.diagflat(softmax)
+                        jacobian -= np.dot(softmax_reshaped, softmax_reshaped.T)
 
-                        # Apply chain rule: dx = J * dout
-                        dx[batch_idx] = np.dot(jacobian, dout_reshaped).reshape(softmax.shape)
+                        result = np.dot(jacobian, dout_reshaped).reshape(softmax.shape)
+
+                        dx[batch_idx] = result
 
                     inputs.grad = dx if inputs.grad is None else inputs.grad + dx
 
