@@ -1,4 +1,4 @@
-"""Tensor object to use for computations like forward/backward pass."""
+"""Fixed implementation of the Tensor class with improved backpropagation."""
 
 import numpy as np
 
@@ -17,7 +17,7 @@ class Tensor:
             requires_grad: whether we want to store gradients infomation.
 
         """
-        self._data = data
+        self._data = np.array(data, dtype=np.float64)
         self._requires_grad = requires_grad
         self._grad: np.ndarray | None = None
         self._backward = (
@@ -127,19 +127,24 @@ class Tensor:
 
             def _backward() -> None:
                 if result.grad is not None:
-                    if self.requires_grad:
-                        self.grad = (
-                            result.grad
-                            if self.grad is None
-                            else self.grad + result.grad
+                    grad = result.grad
+                    if self.data.shape != result.grad.shape:
+                        # Sum along the broadcasted dimensions
+                        reduce_dims = tuple(
+                            range(len(result.grad.shape) - len(self.data.shape)),
                         )
+                        grad = np.sum(result.grad, axis=reduce_dims)
 
-                    if other.requires_grad:
-                        other.grad = (
-                            result.grad
-                            if other.grad is None
-                            else other.grad + result.grad
+                    self.grad = grad if self.grad is None else self.grad + grad
+
+                    if other.data.shape != result.grad.shape:
+                        # Sum along the broadcasted dimensions
+                        reduce_dims = tuple(
+                            range(len(result.grad.shape) - len(other.data.shape)),
                         )
+                        grad = np.sum(result.grad, axis=reduce_dims)
+
+                    other.grad = grad if other.grad is None else other.grad + grad
 
             result.register_backward(_backward)
 
@@ -149,21 +154,32 @@ class Tensor:
         """Register the closure to compute backward pass."""
         self._backward = func
 
-    def backward(self, grad: np.ndarray | None = None, visited: None = None) -> None:
-        """Compute the backward pass."""
-        if visited is None:
-            visited = set()
+    def backward(self, grad: np.ndarray | None = None) -> None:
+        """Compute the backward pass using topological sort.
 
-        if self in visited:
-            return
+        Args:
+            grad: Initial gradient to start backpropagation from.
 
-        visited.add(self)
+        """
+        # Build computational graph in topological order
+        topo = []
+        visited = set()
 
+        def build_topo(node) -> None:
+            if node not in visited:
+                visited.add(node)
+                for child in node.prev:
+                    build_topo(child)
+                topo.append(node)
+
+        build_topo(self)
+
+        # Initialize gradient
         if grad is None:
-            grad = np.ones_like(self._data)
+            self.grad = np.ones_like(self.data)
+        else:
+            self.grad = grad
 
-        self._grad = grad if self._grad is None else self._grad + grad
-        self._backward()
-
-        for t in self._prev:
-            t.backward(visited=visited)
+        # Backpropagate gradients in reverse topological order
+        for node in reversed(topo):
+            node._backward()
