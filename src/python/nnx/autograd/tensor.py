@@ -31,6 +31,11 @@ class Tensor:
         return self._data
 
     @property
+    def shape(self) -> tuple:
+        """Shape of the underlying array."""
+        return self._data.shape
+
+    @property
     def requires_grad(self) -> bool:
         """Read only property of whether the Tensor requires a grad."""
         return self._requires_grad

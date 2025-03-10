@@ -5,6 +5,7 @@ from typing import Callable
 
 import numpy as np
 
+from nnx import autograd
 from nnx.autograd.tensor import Tensor
 
 
@@ -488,5 +489,58 @@ class Linear(Layer):
 
         if self._bias is not None:
             outputs += self._bias
+
+        return outputs
+
+
+class Dropout(Layer):
+    """Regularistion measure by randomly deactivating neurons."""
+
+    def __init__(self, p: float = 0.5) -> None:
+        """C'tor of Dropout.
+
+        Raises:
+            ValueError: probability which exceeds the valid range.
+
+        Args:
+            p: probability of a neuron be inactive.
+
+        """
+        super().__init__()
+
+        if not (0 < p < 1):
+            msg = f"Probability needs to be inside (0, 1). Got {p}."
+            raise ValueError(msg)
+
+        self._p = p
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        """Apply dropout to the inputs.
+
+        Args:
+            inputs: tensor which needs to be transformed.
+
+        Returns:
+            A transformed version of the inputs.
+
+        """
+        if not inputs.requires_grad:
+            return inputs
+
+        mask = autograd.rng.binomial(1, 1 - self._p, inputs.shape)
+
+        outputs = Tensor(
+            inputs.data * mask / (1 - self._p),
+            requires_grad=inputs.requires_grad,
+        )
+
+        outputs.prev = {inputs}
+
+        def _backward() -> None:
+            if outputs.grad is not None:
+                grad = outputs.grad * mask / (1 - self._p)
+                inputs.grad = grad if inputs.grad is None else inputs.grad + grad
+
+        outputs.register_backward(_backward)
 
         return outputs
