@@ -161,7 +161,7 @@ def plot_validation_accuracy(
     ax1.annotate(
         f"Best: {best_acc:.2%}",
         xy=(best_epoch, best_acc),
-        xytext=(best_epoch - 0.5, best_acc + 0.1),
+        xytext=(best_epoch - 0.5, best_acc + 0.07),
         fontsize=12,
         fontweight="bold",
     )

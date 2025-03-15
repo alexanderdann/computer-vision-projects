@@ -97,6 +97,30 @@ class Sequential(Layer):
                 print(f"Skpping layer {layer}")
         return params
 
+    def eval(self) -> "Sequential":
+        """Set the model to eval mode.
+
+        Returns:
+            The model in eval mode.
+
+        """
+        for param in self.parameters:
+            param.requires_grad = False
+
+        return self
+
+    def train(self) -> "Sequential":
+        """Set the model to train mode.
+
+        Returns:
+            The model in train mode.
+
+        """
+        for param in self.parameters:
+            param.requires_grad = True
+
+        return self
+
 
 class Conv2D(Layer):
     """Resembles a 2D Convolution."""
@@ -542,5 +566,134 @@ class Dropout(Layer):
                 inputs.grad = grad if inputs.grad is None else inputs.grad + grad
 
         outputs.register_backward(_backward)
+
+        return outputs
+
+
+class LayerNorm(Layer):
+    """Implements Layer Normalization.
+
+    Normalizes the input across the features dimension (last dimension)
+    with learnable affine parameters (gamma and beta).
+    """
+
+    def __init__(self, normalized_shape: int, eps: float = 1e-5) -> None:
+        """Initialize LayerNorm with shape parameters.
+
+        Args:
+            normalized_shape: Size of the feature dimension to normalize across
+            eps: Small constant for numerical stability
+
+        """
+        super().__init__()
+        self._normalized_shape = normalized_shape
+        self._eps = eps
+
+        self._gamma = Tensor(np.ones(normalized_shape), requires_grad=True)
+        self._beta = Tensor(np.zeros(normalized_shape), requires_grad=True)
+
+        self._parameters.append(self._gamma)
+        self._parameters.append(self._beta)
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        """Apply layer normalization to inputs.
+
+        Args:
+            inputs: Tensor which needs to be transformed.
+
+        Returns:
+            Normalized tensor of same shape with scaling and shifting applied
+
+        Raises:
+            ValueError: If the last dimension of inputs doesn't match normalized_shape
+
+        """
+        if inputs.data.shape[-1] != self._normalized_shape:
+            msg = (
+                f"Last dimension of inputs {inputs.data.shape[-1]} "
+                f"doesn't match normalized_shape {self._normalized_shape}"
+            )
+            raise ValueError(msg)
+
+        # Calculate mean and variance along the feature dimension (last dimension)
+        # Keep dimensions for proper broadcasting
+        mean = np.mean(inputs.data, axis=-1, keepdims=True)
+        var = np.var(inputs.data, axis=-1, keepdims=True)
+
+        x_norm = (inputs.data - mean) / np.sqrt(var + self._eps)
+
+        # Scale and shift (broadcast gamma and beta across batch dimensions)
+        outputs_data = self._gamma.data * x_norm + self._beta.data
+
+        outputs = Tensor(
+            outputs_data,
+            requires_grad=(
+                inputs.requires_grad
+                or self._gamma.requires_grad
+                or self._beta.requires_grad
+            ),
+        )
+
+        if outputs.requires_grad:
+            outputs.prev = {inputs, self._gamma, self._beta}
+
+            def _backward() -> None:
+                if outputs.grad is not None:
+                    # Cache values for reuse in gradients
+                    inv_std = 1.0 / np.sqrt(var + self._eps)
+
+                    if self._gamma.requires_grad:
+                        gamma_grad = np.sum(
+                            outputs.grad * x_norm,
+                            axis=tuple(range(outputs.grad.ndim - 1)),
+                        )
+                        self._gamma.grad = (
+                            gamma_grad
+                            if self._gamma.grad is None
+                            else self._gamma.grad + gamma_grad
+                        )
+
+                    if self._beta.requires_grad:
+                        beta_grad = np.sum(
+                            outputs.grad,
+                            axis=tuple(range(outputs.grad.ndim - 1)),
+                        )
+                        self._beta.grad = (
+                            beta_grad
+                            if self._beta.grad is None
+                            else self._beta.grad + beta_grad
+                        )
+
+                    if inputs.requires_grad:
+                        num_channels = inputs.data.shape[-1]
+                        dx_norm = outputs.grad * self._gamma.data
+
+                        dvar = (
+                            -0.5
+                            * np.sum(
+                                dx_norm * (inputs.data - mean),
+                                axis=-1,
+                                keepdims=True,
+                            )
+                            * inv_std**3
+                        )
+                        dmean = -np.sum(
+                            dx_norm * inv_std,
+                            axis=-1,
+                            keepdims=True,
+                        ) + dvar * (-2.0 / num_channels) * np.sum(
+                            inputs.data - mean,
+                            axis=-1,
+                            keepdims=True,
+                        )
+
+                        dx = (
+                            dx_norm * inv_std
+                            + dvar * (2.0 / num_channels) * (inputs.data - mean)
+                            + dmean * (1.0 / num_channels)
+                        )
+                        inputs.grad = dx if inputs.grad is None else inputs.grad + dx
+
+            outputs.register_backward(_backward)
 
         return outputs

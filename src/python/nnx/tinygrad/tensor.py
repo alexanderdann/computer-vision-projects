@@ -40,6 +40,11 @@ class Tensor:
         """Read only property of whether the Tensor requires a grad."""
         return self._requires_grad
 
+    @requires_grad.setter
+    def requires_grad(self, value: bool) -> None:
+        """Setter for the _requires_grad."""
+        self._requires_grad = value
+
     @property
     def grad(self) -> np.ndarray | None:
         """Return the gradients."""
