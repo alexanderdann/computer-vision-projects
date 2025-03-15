@@ -8,7 +8,7 @@ from nnx.tinygrad.tensor import Tensor
 class SGD:
     """Implements a Stochastic Gradient Descent."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         parameters: list[Tensor],
         lr: float = 0.01,

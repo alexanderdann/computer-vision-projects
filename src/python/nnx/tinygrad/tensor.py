@@ -192,4 +192,4 @@ class Tensor:
 
         # Backpropagate gradients in reverse topological order
         for node in reversed(topo):
-            node._backward()
+            node._backward()  # noqa: SLF001
