@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from nnx.autograd import rng
+from nnx.tinygrad import rng
 
 
 def xavier_uniform(

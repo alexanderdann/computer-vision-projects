@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from nnx.autograd.tensor import Tensor
+from nnx.tinygrad.tensor import Tensor
 
 
 class SimpleSGD:

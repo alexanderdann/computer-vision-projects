@@ -5,8 +5,8 @@ from typing import Callable
 
 import numpy as np
 
-from nnx import autograd
-from nnx.autograd.tensor import Tensor
+from nnx import tinygrad
+from nnx.tinygrad.tensor import Tensor
 
 
 def sanity_checks(func: Callable) -> Callable:
@@ -527,7 +527,7 @@ class Dropout(Layer):
         if not inputs.requires_grad:
             return inputs
 
-        mask = autograd.rng.binomial(1, 1 - self._p, inputs.shape)
+        mask = tinygrad.rng.binomial(1, 1 - self._p, inputs.shape)
 
         outputs = Tensor(
             inputs.data * mask / (1 - self._p),

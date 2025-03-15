@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from nnx.autograd.layers import Layer
-from nnx.autograd.tensor import Tensor
+from nnx.tinygrad.layers import Layer
+from nnx.tinygrad.tensor import Tensor
 
 
 class ReLU(Layer):
