@@ -12,7 +12,7 @@ TinyGrad is a neural network framework implemented purely in NumPy that provides
 
 - **Complete Autograd System**: Implemented automatic differentiation with computational graph tracking
 - **Flexible Layer API**: Built modular components for constructing complex architectures with PyTorch-like syntax
-- **Modern Optimizers**: Implemented a simple (SimpleSGD) and sophisticated optimizer (AdamW) with proper weight decay and gradient clipping
+- **Modern Optimizers**: Implemented sophisticated optimizers (SGD & AdamW) with proper weight decay and gradient clipping
 - **Core Neural Network Components**: Created efficient implementations of Linear, Conv2D, Reshape, and Sequential layers
 - **Activation Functions**: Implemented ReLU and Softmax with proper backpropagation
 - **Regularization**: Added Dropout for reducing overfitting
@@ -24,7 +24,7 @@ TinyGrad is a neural network framework implemented purely in NumPy that provides
 
 ```
 nnx/
-├── autograd/
+├── tinygrad/
 │   ├── activations.py      # Activation functions (ReLU, Softmax)
 │   ├── initialisation.py   # Weight initialization schemes (Xavier)
 │   ├── layers.py           # Layer implementations (Linear, Conv2D, Sequential, etc.)
@@ -92,9 +92,9 @@ TinyGrad includes modern optimization algorithms:
 ### Building a Model
 
 ```python
-from nnx.autograd.activations import ReLU, Softmax
-from nnx.autograd.initialisation import xavier_uniform
-from nnx.autograd.layers import Dropout, Linear, Reshape, Sequential
+from nnx.tinygrad.activations import ReLU, Softmax
+from nnx.tinygrad.initialisation import xavier_uniform
+from nnx.tinygrad.layers import Dropout, Linear, Reshape, Sequential
 
 # Create a simple classifier for MNIST
 model = Sequential(
@@ -113,12 +113,12 @@ model = Sequential(
 ### Training a Model
 
 ```python
-from nnx.autograd.loss import cross_entropy_loss
-from nnx.autograd.optimizer import AdamW
-from nnx.autograd.tensor import Tensor
+from nnx.tinygrad.loss import cross_entropy_loss
+from nnx.tinygrad.optimizer import AdamW
+from nnx.tinygrad.tensor import Tensor
 
 # Initialize optimizer
-optimizer = AdamW(model.parameters, lr=1e-3, weight_decay=1e-4, clip_value=1.0)
+optimizer = AdamW(model.parameters)
 
 data_loader = ... # logic for handling data
 
@@ -139,6 +139,42 @@ for epoch in range(epochs):
         loss.backward()
         optimizer.step()        
 ```
+
+## End-to-End Example: Fashion MNIST Classification
+To showcase the capabilities and correctness of the framework, an end-to-end example was implemented for the Fashion MNIST dataset. This example shows how the framework handles an entire machine learning workflow from model definition to training, evaluation, and visualization.
+
+### Training and Evaluation
+The example trains a multi-layer perceptron with dropout regularization using the AdamW optimizer. Despite being implemented purely in NumPy, the model achieves respectable accuracy on Fashion MNIST, demonstrating the effectiveness of the framework.
+
+Key takeaways:
+
+- Data loading and preprocessing
+- Model definition using the `Sequential` API
+- Loss calculation with `cross_entropy_loss`
+- Optimization with `AdamW`
+- Training loop implementation
+- Validation of the performance on **unseen** data
+
+#### Visualization of Performance
+
+Several visualizations were added to monitor and analyze model performance. 
+
+![Gradient Flow](images/gradient_flow.png)
+
+First, it was interesting to look at how the gradients behave over the course of the time. As apparent, gradients seem to converge early on in the training with layers being closer to the output having a higher magntitude than layers further away. When dealing with vanishing gradients exactly this is what also happens. Small gradients get even smaller and this is also why things such as norm layers help so much.
+
+![Validation/Training](images/accuracy_plot.png)
+
+Validation accuracy and training loss over epochs. The steady improvement demonstrates successful learning despite the computational constraints of a pure NumPy implementation.
+
+![Examples](images/prediction_showcase.png)
+
+
+Sample predictions on the validation set. This visualization helps understand where the model succeeds and fails, identifying common misclassifications.
+
+
+The complete example is available in `projects/tinygrad/Example.ipynb`. Run the Jupyter notebook to reproduce the results. The fixed seed should lead to reproducible results, though also influenced by hardware.
+
 
 ## What I Learned
 
