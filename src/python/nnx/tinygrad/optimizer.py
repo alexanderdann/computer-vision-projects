@@ -5,23 +5,42 @@ import numpy as np
 from nnx.tinygrad.tensor import Tensor
 
 
-class SimpleSGD:
-    """Implements a simple Stochastic Gradient Descent."""
+class SGD:
+    """Implements a Stochastic Gradient Descent."""
 
     def __init__(
         self,
         parameters: list[Tensor],
         lr: float = 0.01,
+        momentum: float = 0.0,
+        dampening: float = 0.0,
+        weight_decay: float = 0.0,
         clip_value: float = 1.0,
     ) -> None:
-        """Initialize SimpleSGD optimizer with gradient clipping."""
+        """Initialize SGD optimizer with gradient clipping.
+
+        Raises:
+            ValueError: in the case of invalid paameters.
+
+        """
         self._parameters = parameters
         self._lr = lr
+
         self._clip_value = clip_value
+
+        for name, val in [("Momentum", momentum), ("Dampening", dampening)]:
+            if not (0 <= momentum < 1):
+                msg = f"{name} must be in [0, 1), got {val}"
+                raise ValueError(msg)
+
+        self._momentum = momentum
+        self._dampening = dampening
+        self._weight_decay = weight_decay
+        self._momentum_terms = []
 
     def step(self) -> None:
         """Execute an optimisation step."""
-        for param in self._parameters:
+        for idx, param in enumerate(self._parameters):
             if param.grad is not None:
                 # Handle broadcasting
                 grad = param.grad
@@ -35,6 +54,20 @@ class SimpleSGD:
                         grad = np.reshape(grad, data.shape)
 
                 clipped_grad = np.clip(grad, -self._clip_value, self._clip_value)
+
+                clipped_grad = self._weight_decay * grad
+
+                if self._momentum:
+                    if idx >= len(self._momentum_terms):
+                        self._momentum_terms.append(clipped_grad.copy())
+
+                    else:
+                        self._momentum_terms[idx] = (
+                            self._momentum * self._momentum_terms[idx]
+                            + (1 - self._dampening) * clipped_grad
+                        )
+
+                    clipped_grad = self._momentum_terms[idx]
 
                 data -= self._lr * clipped_grad
 
@@ -62,6 +95,7 @@ class AdamW:
             lr: learning rate.
             betas: tuple containing the first and second order momentum.
             weight_decay: the weight decay to be applied to the weights.
+            clip_value: clipping the gradients by value.
 
         Raises:
             ValueError: malformated betas.

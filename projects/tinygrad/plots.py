@@ -187,7 +187,7 @@ def plot_validation_accuracy(
 
     # Add loss subplot if provided
     if loss_values:
-        assert len(accuracies) == len(loss_values)  # noqa: S101
+        assert len(accuracies) == len(loss_values)
         ax2 = fig.add_subplot(gs[1])
         ax2.plot(
             epochs,
