@@ -1,4 +1,4 @@
-# TinyGrad - A Neural Network Framework Built From Scratch in NumPy
+# Tinygrad - A Neural Network Framework Built From Scratch in NumPy
 
 ## Motivation
 
@@ -6,7 +6,7 @@ This project was born out of a desire to truly understand the inner workings of 
 
 ## Overview
 
-TinyGrad is a neural network framework implemented purely in NumPy that provides a PyTorch-like experience for building and training deep learning models. It serves as both a learning tool and a demonstration of the core concepts that power modern deep learning.
+Tinygrad is a neural network framework implemented purely in NumPy that provides a PyTorch-like experience for building and training deep learning models. It serves as both a learning tool and a demonstration of the core concepts that power modern deep learning.
 
 ### Key Achievements
 
@@ -38,7 +38,7 @@ nnx/
 
 ### Automatic Differentiation
 
-The heart of TinyGrad is a custom implementation of reverse-mode automatic differentiation. Every tensor operation builds a computational graph that tracks how to compute gradients during backpropagation:
+The heart of Tinygrad is a custom implementation of reverse-mode automatic differentiation. Every tensor operation builds a computational graph that tracks how to compute gradients during backpropagation:
 
 ```python
 def __add__(self, other: "Tensor") -> "Tensor":
@@ -72,7 +72,7 @@ def __add__(self, other: "Tensor") -> "Tensor":
 
 ### Neural Network Layers
 
-TinyGrad implements core neural network layers with proper gradient computation:
+Tinygrad implements core neural network layers with proper gradient computation:
 
 - **Linear Layers**: Fully-connected layers with weight and bias parameters
 - **Convolutional Layers**: 2D convolutions with stride and padding support
@@ -82,7 +82,7 @@ TinyGrad implements core neural network layers with proper gradient computation:
 
 ### Optimizers
 
-TinyGrad includes modern optimization algorithms:
+Tinygrad includes modern optimization algorithms:
 
 - **SGD**: Simple stochastic gradient descent with gradient clipping
 - **AdamW**: Adam with proper weight decay implementation (as per paper) without the learning rate scheudling
@@ -178,7 +178,7 @@ The complete example is available in `projects/tinygrad/Example.ipynb`. Run the 
 
 ## What I Learned
 
-Building TinyGrad provided invaluable insights into:
+Building Tinygrad provided invaluable insights into:
 
 1. **Computation Graph Design**: How frameworks track operations and compute gradients
 2. **Efficient Backpropagation**: The algorithms that make neural network training possible
@@ -197,6 +197,6 @@ Building TinyGrad provided invaluable insights into:
 
 ## Conclusion
 
-TinyGrad demonstrates that the core concepts behind modern deep learning frameworks can be implemented from scratch with just NumPy. While not meant for production use, it serves as a valuable learning tool for understanding the internals of frameworks like PyTorch and TensorFlow.
+Tinygrad demonstrates that the core concepts behind modern deep learning frameworks can be implemented from scratch with just NumPy. While not meant for production use, it serves as a valuable learning tool for understanding the internals of frameworks like PyTorch and TensorFlow.
 
 By building this project, I've gained a much deeper understanding of automatic differentiation, neural network architecture design, and the challenges involved in creating a user-friendly deep learning API while also being exceptionally performant. This experience makes me value the great work behind PyTorch and JAX or Tensorflow even more!
