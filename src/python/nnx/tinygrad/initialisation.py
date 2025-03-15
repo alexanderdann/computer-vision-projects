@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from nnx.autograd import rng
+from nnx.tinygrad import rng
 
 
 def xavier_uniform(
@@ -28,6 +28,6 @@ def xavier_uniform(
     """
     limit = gain * np.sqrt(6 / (fan_in + fan_out))
     weights = rng.uniform(-limit, limit, size=size)
-    bias = np.zeros((fan_out, 1))
+    bias = np.zeros((fan_out,))
 
     return weights, bias
