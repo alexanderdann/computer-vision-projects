@@ -12,6 +12,11 @@ setup(
         "numpy==1.26.4",
         "ruff==0.9.7",
         "tqdm==4.67.1",
+        "matplotlib==3.10.1",
+        "plotly==6.0.1",
+        "datasets[vision]==3.4.1",
+        "nibabel==5.3.2",
+        "opencv-python==4.11.0",
     ],
     extras_require={
         "torch": ["torch==2.2.0", "torchvision==0.17.0"],
