@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import nibabel as nib
 import numpy as np
-from scipy.ndimage import binary_dilation, distance_transform_edt
+from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt
 
 import nnx.data
 from nnx.data.data_structures import AnnotationSample, ImagePrompt, SAMSample
@@ -46,13 +46,17 @@ def sample_positive_prompt(mask: np.ndarray) -> ImagePrompt:
 
 def sample_negative_prompt(
     mask: np.ndarray,
+    spatial_constraint: np.ndarray | None = None,
     boundary_width: int = 10,
     safety_margin: int = 5,
-) -> ImagePrompt:
+) -> ImagePrompt | None:
     """Sample a single negative point prompt, given the mask.
 
     Args:
         mask: binary masks representing the area of interest.
+        spatial_constraint: region in the mask where it is not allowed to draw
+            a negative sample. This is crucial for disconnected masks within the
+            same class.
         boundary_width: the actual width of the boundary around the safe region to
             draw a negative sample.
         safety_margin: labels can have noise, so we should not sample too close to
@@ -70,12 +74,15 @@ def sample_negative_prompt(
     safe_boundary = binary_dilation(boundary, iterations=boundary_width)
     safe_boundary[safe_boundary == boundary] = 0
 
+    if spatial_constraint is not None:
+        safe_boundary[spatial_constraint] = 0
+
     if not np.any(safe_boundary):
-        msg = "Unexpected runtime behaviour. Did not find a boundary."
-        raise RuntimeError(msg)
+        print("EDGE CASE")
+        safe_boundary = boundary
 
     # Sample uniformly from boundary
-    indices = np.where(boundary)
+    indices = np.where(safe_boundary)
     idx = nnx.data.rng.integers(0, len(indices[0]), endpoint=False)
     y, x = indices[0][idx], indices[1][idx]
 
@@ -90,26 +97,55 @@ def sample_negative_prompt(
     )
 
 
-def sample_prompts(mask: np.ndarray) -> list[ImagePrompt]:
+def sample_prompts(
+    mask: np.ndarray,
+    spatial_constraint: np.ndarray | None = None,
+) -> list[ImagePrompt]:
     """Sample prompts.
 
     Args:
         mask: binary mask which contains the class of relevance.
+        spatial_constraint: whether some region of the image should not
+            be used for generation of the prompts.
 
     Returns:
         List containing the generated prompts.
 
     """
+    ccount, connected_components = cv2.connectedComponents(
+        mask.astype(np.uint8),
+        connectivity=8,
+    )
+
+    max_ccount = 2
+    if ccount > max_ccount:  # when having disconnected masks for the same class
+        cindices = set(np.unique(connected_components))
+
+        data = []
+        for idx in cindices:
+            if idx:  # skip background
+                cmask = np.zeros_like(connected_components)
+                cmask[connected_components == idx] = 1
+                no_go = connected_components != 0
+
+                data.extend(sample_prompts(cmask, no_go))
+
+        return data
+
     data = [sample_positive_prompt(mask=mask)]
 
     half = 0.5
     third = 1 / 3
 
-    if nnx.data.rng.random() > third:
-        data.append(sample_positive_prompt(mask=mask))
-
     if nnx.data.rng.random() > half:
-        data.append(sample_negative_prompt(mask=mask))
+        data.append(
+            sample_positive_prompt(mask=mask),
+        )
+
+    if nnx.data.rng.random() > third:
+        data.append(
+            sample_negative_prompt(mask=mask, spatial_constraint=spatial_constraint),
+        )
 
     return data
 
@@ -237,7 +273,6 @@ class CTSpine1K:
 
             lower = upper
 
-        print(self._sorted_lookup())
         msg = f"Trying access out of bound entry for dataset with {len(self)}."
         raise ValueError(msg)
 
@@ -260,7 +295,13 @@ class CTSpine1K:
             if c_idx:  # we skip background
                 bitmask = np.zeros_like(annotation)
                 bitmask[annotation == c_idx] = 1
-                bitmasks.append(bitmask)
+                bitmask = binary_erosion(bitmask, iterations=1)
+
+                if np.sum(bitmask) < 1:
+                    # after erosion we have an empty mask
+                    continue
+
+                bitmasks.append(bitmask.astype(np.float32))
 
         return AnnotationSample(image=input_image, bitmasks=bitmasks)
 
