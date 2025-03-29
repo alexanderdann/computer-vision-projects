@@ -33,7 +33,7 @@ class SAM2Transforms(nn.Module):
             ),
         )
 
-    def __call__(self, x: PI):
+    def __call__(self, x):
         x = self.to_tensor(x) if not isinstance(x, torch.Tensor) else x
         return self.transforms(x)
 
