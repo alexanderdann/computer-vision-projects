@@ -14,7 +14,12 @@ from torch.utils.data import Dataset
 import nnx.data
 from nnx.data.data_structures import AnnotationSample, ImagePrompt, SAMSample
 
-BOUND = dict[str, torch.Tensor | str, list[torch.Tensor] | str, list[list[torch.Tensor]]]  # noqa: E501
+BOUND = dict[
+    str,
+    torch.Tensor | str,
+    list[torch.Tensor] | str,
+    list[list[torch.Tensor]],
+]
 SAMTorchSample = TypeVar("SAMTorchSample", bound=BOUND)
 
 
@@ -207,13 +212,14 @@ class CTSpine1K:
             file_path = candidate / "image.nii.gz"
             segmentation_path = candidate / "segmentation.nii.gz"
 
-            if (file_path).is_file() and (segmentation_path).is_file():
+            if (file_path).is_file() and (file_path).is_file():
                 image_slices = self._get_sample_length(file_path)
                 segmentation_slices = self._get_sample_length(segmentation_path)
                 if image_slices != segmentation_slices:
                     msg = (
-                        f"Image slices ({len(image_slices)}) are not equal to "
-                        "segmentation slices ({len(segmentation_slices)})"
+                        f"Invalid assumptions for {file_path} and {segmentation_path}."
+                        f"Image slices ({image_slices}) are not equal to "
+                        f"segmentation slices ({segmentation_slices})."
                     )
                     raise ValueError(msg)
 
@@ -314,9 +320,12 @@ class SAMAdapter(Dataset):
     def __init__(
         self,
         dataset: CTSpine1K,
-        image_size: int,
+        image_size: int | tuple[int, int],
     ) -> None:
         """C'tor of SAMAdapter.
+
+        Raises:
+            ValueError: for the case of an invalid image_size.
 
         Args:
             dataset: class which forwards samples of the CTSpine1K dataset.
@@ -326,6 +335,14 @@ class SAMAdapter(Dataset):
         """
         super().__init__()
         self._dataset = dataset
+
+        if isinstance(image_size, tuple):
+            if image_size[0] != image_size[1]:
+                msg = f"For SAM we need images to be quadratic. Not {image_size}"
+                raise ValueError(msg)
+
+            image_size = image_size[0]
+
         self._image_size = image_size
 
     def _convert_point_prompts(

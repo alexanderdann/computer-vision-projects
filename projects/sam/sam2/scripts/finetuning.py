@@ -37,7 +37,7 @@ def to_device(data, device):  # noqa: ANN201
 def training_step(  # noqa: PLR0913, PLR0917
     predictor: SAM2ImagePredictor,
     optimizer: torch.optim.Optimizer,
-    grad_scaler: torch.cuda.amp.GradScaler,
+    grad_scaler: torch.amp.GradScaler,
     image: torch.Tensor,
     masks: list[torch.Tensor],
     point_coords: list[torch.Tensor],
@@ -56,7 +56,7 @@ def training_step(  # noqa: PLR0913, PLR0917
     for _, [mask, points, labels] in enumerate(
         zip(masks, point_coords, point_labels, strict=True),
     ):
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast(device_type="cuda"):
             if not image_set:
                 predictor.set_image(image)
                 image_set = True
@@ -90,10 +90,10 @@ def training_step(  # noqa: PLR0913, PLR0917
                 1,
             )
 
-            loss: torch.Tensor = grad_scaler.scale(iou_loss_)
+            loss: torch.Tensor = grad_scaler.scale(iou_loss_ + focal_loss)
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(predictor.model.parameters(), max_norm=0.1)
+            torch.nn.utils.clip_grad_norm_(predictor.model.parameters(), max_norm=1)
 
             losses.append(loss.item())
 
@@ -106,7 +106,7 @@ def training_step(  # noqa: PLR0913, PLR0917
 
 if __name__ == "__main__":
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    cache_dir = Path("/Users/alexanderdann/Documents/Privat/Code/Data/CTSpine1K")
+    cache_dir = Path("/home/ubuntu/data/CTSpine1K")
     files = [file.parent for file in cache_dir.rglob("*") if file.suffix == ".gz"]
 
     sam2_model = build_sam2(MODEL_CONFIG, SAM2_CHECKPOINT, device)
@@ -125,13 +125,15 @@ if __name__ == "__main__":
         weight_decay=1e-3,
     )
 
-    grad_scaler = torch.cuda.amp.GradScaler()
+    grad_scaler = torch.amp.GradScaler("cuda")
 
     dataloader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
         collate_fn=dataset.collate_fn,
-        num_workers=10,
+        num_workers=16,
+        pin_memory=True,
+        prefetch_factor=10,
     )
 
     data_iter = tqdm(dataloader, desc="Starting finetuning...")
