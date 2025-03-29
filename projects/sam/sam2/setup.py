@@ -23,7 +23,9 @@ with open("README.md", encoding="utf-8") as f:
 # Required dependencies
 REQUIRED_PACKAGES = [
     "torch>=2.2.0",
+    "tensordict>=0.6.0",
     "torchvision>=0.17.0",
+    "tensorboard>=2.17.0",
     "numpy>=1.24.4",
     "tqdm>=4.66.1",
     "hydra-core>=1.3.2",
@@ -56,9 +58,7 @@ EXTRA_PACKAGES = {
         "fvcore>=0.1.5.post20221221",
         "pandas>=2.2.2",
         "scikit-image>=0.24.0",
-        "tensorboard>=2.17.0",
         "pycocotools>=2.0.8",
-        "tensordict>=0.6.0",
         "opencv-python>=4.7.0",
         "submitit>=1.5.1",
     ],
@@ -115,7 +115,6 @@ try:
     from torch.utils.cpp_extension import BuildExtension
 
     class BuildExtensionIgnoreErrors(BuildExtension):
-
         def finalize_options(self):
             try:
                 super().finalize_options()
