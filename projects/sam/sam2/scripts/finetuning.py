@@ -8,6 +8,7 @@ import torch
 import wandb
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from training.loss_fns import iou_loss, sigmoid_focal_loss
@@ -22,18 +23,32 @@ nnx.data.rng = np.random.default_rng(seed=1)
 class SAM2FinetuningConfig:
     """Configurable finetuning unit for SAM2."""
 
-    learning_rate: float = 1e-6
-    weight_decay: float = 1e-3
+    # Model configuration
     checkpoint_dir: str = "/home/ubuntu/data/checkpoints"
     checkpoint: str = "../checkpoints/sam2.1_hiera_large.pt"
     model_config: str = "configs/sam2.1/sam2.1_hiera_l.yaml"
-    batch_size: int = 3
-    validation_size: int = 64
     image_size: int = 1024
 
+    # Training parameters
+    learning_rate: float = 1e-6
+    weight_decay: float = 1e-3
+    epochs: int = 3
+    clip_norm: float = 1.0
+
+    # Scheduler configuration
+    scheduler_type: str = "cosine"
+    min_lr: float = 1e-8
+
+    # Dataset configuration
+    batch_size: int = 32
+    validation_size: int = 64
     num_workers: int = 16
     prefetch_factor: int = 10
     shuffle: bool = True
+
+    # Checkpoint and evaluation
+    save_checkpoint: bool = True
+    validation_steps: int = 1
 
 
 class SAM2Finetuning:
@@ -56,6 +71,7 @@ class SAM2Finetuning:
             v_dataloader: dataloader for the training phase
             from_checkpoint: whether the parameters should be initialised
                 from a checkpoint.
+            with_wandb: if weights and biases should be used to log metrics
 
         Raises:
             ValueError: for the case when finetuning is ran without CUDA support.
@@ -77,14 +93,20 @@ class SAM2Finetuning:
         )
 
         self._predictor = SAM2ImagePredictor(sam2_model)
-
-        self._predictor.model.sam_mask_decoder.train(mode=True)
-        self._predictor.model.sam_prompt_encoder.train(mode=True)
+        self._predictor.model.image_encoder.eval()
+        self._predictor.model.sam_mask_decoder.train()
+        self._predictor.model.sam_prompt_encoder.train()
 
         self._optimizer = torch.optim.AdamW(
             params=self._predictor.model.parameters(),
             lr=self._config.learning_rate,
             weight_decay=self._config.weight_decay,
+        )
+
+        self._scheduler = CosineAnnealingLR(
+            self._optimizer,
+            T_max=self._config.epochs,
+            eta_min=self._config.min_lr,
         )
 
         self._grad_scaler = torch.amp.GradScaler("cuda")
@@ -97,50 +119,48 @@ class SAM2Finetuning:
         if self._wandb:
             wandb.init(project="SAM2 Finetuning")
 
-    def tune(self, checkpoint_steps: int = 250, validation_steps: int = 100) -> None:
+    def tune(self) -> None:
         """Tune the SAM2 model with the given data."""
-        data_iter = tqdm(self._t_dataloader, desc="Starting finetuning...")
-
-        training_steps = 0
-        for sample in data_iter:
+        for epoch in range(self._config.epochs):
+            data_iter = tqdm(self._t_dataloader, desc="Starting finetuning...")
             val_str = ""
-            for batch_idx in range(self._config.batch_size):
-                if not len(sample["masks"][batch_idx]):
-                    data_iter.set_description_str(
-                        "Finetuning. Skipped batch with no masks.",
+
+            if epoch and self._config.save_checkpoint:
+                self._save_checkpoint(epoch)
+
+            if epoch and (epoch % self._config.validation_steps):
+                score = self._validate()
+                val_str = f" || Current validation score {score}."
+
+            for sample in data_iter:
+                for batch_idx in range(self._config.batch_size):
+                    if not len(sample["masks"][batch_idx]):
+                        data_iter.set_description_str(
+                            "Finetuning. Skipped batch with no masks.",
+                        )
+                        continue  # batch with no masks
+
+                    masks = self.to_device(sample["masks"][batch_idx], self._device)
+                    point_coords = self.to_device(
+                        sample["point_coords"][batch_idx],
+                        self._device,
                     )
-                    continue  # batch with no masks
+                    point_labels = self.to_device(
+                        sample["point_labels"][batch_idx],
+                        self._device,
+                    )
+                    image = self.to_device(sample["images"][batch_idx], self._device)
 
-                masks = self.to_device(sample["masks"][batch_idx], self._device)
-                point_coords = self.to_device(
-                    sample["point_coords"][batch_idx],
-                    self._device,
-                )
-                point_labels = self.to_device(
-                    sample["point_labels"][batch_idx],
-                    self._device,
-                )
-                image = self.to_device(sample["images"][batch_idx], self._device)
+                    loss = self._training_step(
+                        image=image,
+                        masks=masks,
+                        point_coords=point_coords,
+                        point_labels=point_labels,
+                    )
 
-                loss = self._training_step(
-                    image=image,
-                    masks=masks,
-                    point_coords=point_coords,
-                    point_labels=point_labels,
-                )
+                    desc_str = f"Finetuning. Current loss: {loss}" + val_str
 
-                training_steps += 1
-
-                if training_steps % validation_steps == 0:
-                    score = self._validate()
-                    val_str = f" || Last validation score: {score}"
-
-                desc_str = f"Finetuning. Current loss: {loss}" + val_str
-
-                if training_steps % checkpoint_steps == 0:
-                    self._save_checkpoint(training_steps)
-
-                data_iter.set_description_str(desc_str)
+                    data_iter.set_description_str(desc_str)
 
     @classmethod
     def to_device(cls, data, device):  # noqa: ANN206
@@ -248,7 +268,7 @@ class SAM2Finetuning:
 
                 torch.nn.utils.clip_grad_norm_(
                     self._predictor.model.parameters(),
-                    max_norm=1,
+                    max_norm=self._config.clip_norm,
                 )
 
                 losses.append(loss.item())
@@ -312,6 +332,7 @@ class SAM2Finetuning:
     def _validate(self) -> float:
         scores: list = []
 
+        self._predictor.model.eval()
         for sample in self._v_dataloader:
             for batch_idx in range(self._config.batch_size):
                 if not len(sample["masks"][batch_idx]):
@@ -335,6 +356,11 @@ class SAM2Finetuning:
                     point_labels=point_labels,
                 )
                 scores.append(score)
+
+        # restore regime as used during trainin
+        self._predictor.model.image_encoder.eval()
+        self._predictor.model.sam_mask_decoder.train()
+        self._predictor.model.sam_prompt_encoder.train()
 
         return np.mean(scores)
 
@@ -411,6 +437,7 @@ if __name__ == "__main__":
         collate_fn=t_dataset.collate_fn,
         num_workers=config.num_workers,
         pin_memory=True,  # should always be True unless there is a good reason
+        drop_last=True,
         prefetch_factor=config.num_workers,
         shuffle=config.shuffle,
     )
@@ -421,6 +448,7 @@ if __name__ == "__main__":
         collate_fn=t_dataset.collate_fn,
         num_workers=config.num_workers,
         pin_memory=True,  # should always be True unless there is a good reason
+        drop_last=True,
         prefetch_factor=config.num_workers,
         shuffle=config.shuffle,
     )
