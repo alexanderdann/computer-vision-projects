@@ -19,6 +19,8 @@ setup(
         "pydantic==2.10.6",
         "scipy==1.15.0",
         "nbformat==5.10.4",  # Needed for rendering of plotly
+        "wandb==0.19.8",
+        "gin_config==0.5.0",
     ],
     extras_require={
         "torch": ["torch==2.6.0", "torchvision==0.21.0"],
