@@ -51,7 +51,6 @@ class SAM2FinetuningConfig:
     # Checkpoint and evaluation
     save_checkpoint: bool = True
     validation_steps: int = 1
-    log_steps: int = 20
 
 
 class SAM2Finetuning:
@@ -149,13 +148,6 @@ class SAM2Finetuning:
             data_iter = tqdm(self._t_dataloader, desc="Starting finetuning...")
             val_str = ""
 
-            if epoch and self._config.save_checkpoint:
-                self._save_checkpoint(epoch)
-
-            if epoch and (epoch % self._config.validation_steps):
-                score = self._validate()
-                val_str = f" || Current validation score {score}."
-
             for batch in data_iter:
                 for batch_idx in range(self._config.batch_size):
                     if not len(batch["masks"][batch_idx]):
@@ -195,6 +187,13 @@ class SAM2Finetuning:
                 self._grad_scaler.update()
 
                 self._predictor.model.zero_grad()
+
+            if epoch and self._config.save_checkpoint:
+                self._save_checkpoint(epoch)
+
+            if epoch and (self._config.validation_steps % epoch == 0):
+                score = self._validate()
+                val_str = f" || Current validation score {score}."
 
             self._scheduler.step()
 
@@ -259,11 +258,14 @@ class SAM2Finetuning:
             Average loss over the masks.
 
         """
+        num_masks = len(masks)
         image_set = False
+        total_loss: torch.Tensor | None = None
         losses = []
-        for idx, [mask, points, labels] in enumerate(
-            zip(masks, point_coords, point_labels, strict=True),
-        ):
+        iou_losses = []
+        focal_losses = []
+
+        for mask, points, labels in zip(masks, point_coords, point_labels, strict=True):
             with torch.amp.autocast(
                 device_type="cuda",
                 enabled=self._config.amp_enabled,
@@ -291,21 +293,27 @@ class SAM2Finetuning:
                     alpha=0.1,
                 )
 
-            loss: torch.Tensor = self._grad_scaler.scale(iou_loss_ + focal_loss)
-            loss.backward()
+            loss: torch.Tensor = (iou_loss_ + focal_loss) / num_masks
+            total_loss = loss if total_loss is None else total_loss + loss
 
             losses.append(loss.item())
+            iou_losses.append(iou_loss_.item())
+            focal_losses.append(focal_loss.item())
 
-            if self._wandb and (idx % self._config.log_steps == 0):
-                wandb.log(
-                    {
-                        "Loss/IoU Loss": iou_loss_.item(),
-                        "Loss/Focal Loss": focal_loss.item(),
-                        "Loss/Total Loss": loss.item(),
-                    },
-                )
+        scaled_total_loss: torch.Tensor = self._grad_scaler.scale(total_loss)
+        scaled_total_loss.backward()
 
-        return np.mean(losses)
+        if self._wandb:
+            wandb.log(
+                {
+                    "Loss/IoU Loss": np.mean(iou_losses),
+                    "Loss/Focal Loss": np.mean(focal_losses),
+                    "Loss/Total Loss": total_loss.item(),
+                    "Batch/Num Masks": num_masks,
+                },
+            )
+
+        return total_loss.item()
 
     def _validation_step(
         self,
@@ -472,7 +480,7 @@ if __name__ == "__main__":
     )
 
     v_dataloader = DataLoader(
-        t_dataset,
+        v_dataset,
         batch_size=config.validation_size,
         collate_fn=t_dataset.collate_fn,
         num_workers=config.num_workers,
