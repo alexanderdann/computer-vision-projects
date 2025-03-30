@@ -156,24 +156,24 @@ class SAM2Finetuning:
                 score = self._validate()
                 val_str = f" || Current validation score {score}."
 
-            for sample in data_iter:
+            for batch in data_iter:
                 for batch_idx in range(self._config.batch_size):
-                    if not len(sample["masks"][batch_idx]):
+                    if not len(batch["masks"][batch_idx]):
                         data_iter.set_description_str(
                             "Finetuning. Skipped batch with no masks.",
                         )
                         continue  # batch with no masks
 
-                    masks = self.to_device(sample["masks"][batch_idx], self._device)
+                    masks = self.to_device(batch["masks"][batch_idx], self._device)
                     point_coords = self.to_device(
-                        sample["point_coords"][batch_idx],
+                        batch["point_coords"][batch_idx],
                         self._device,
                     )
                     point_labels = self.to_device(
-                        sample["point_labels"][batch_idx],
+                        batch["point_labels"][batch_idx],
                         self._device,
                     )
-                    image = self.to_device(sample["images"][batch_idx], self._device)
+                    image = self.to_device(batch["images"][batch_idx], self._device)
 
                     loss = self._training_step(
                         image=image,
@@ -185,6 +185,16 @@ class SAM2Finetuning:
                     desc_str = f"Finetuning. Current loss: {loss}" + val_str
 
                     data_iter.set_description_str(desc_str)
+
+                self._grad_scaler.unscale_(self._optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self._predictor.model.parameters(),
+                    max_norm=self._config.clip_norm,
+                )
+                self._grad_scaler.step(self._optimizer)
+                self._grad_scaler.update()
+
+                self._predictor.model.zero_grad()
 
             self._scheduler.step()
 
@@ -281,30 +291,19 @@ class SAM2Finetuning:
                     alpha=0.1,
                 )
 
-                loss: torch.Tensor = iou_loss_ + focal_loss
+            loss: torch.Tensor = self._grad_scaler.scale(iou_loss_ + focal_loss)
+            loss.backward()
 
-                if self._wandb and (self._config.log_steps % idx == 0):
-                    wandb.log(
-                        {
-                            "Loss/IoU Loss": iou_loss_.item(),
-                            "Loss/Focal Loss": focal_loss.item(),
-                            "Loss/Total Loss": loss.item(),
-                        },
-                    )
+            losses.append(loss.item())
 
-                loss: torch.Tensor = self._grad_scaler.scale(iou_loss_ + focal_loss)
-                loss.backward()
-
-                torch.nn.utils.clip_grad_norm_(
-                    self._predictor.model.parameters(),
-                    max_norm=self._config.clip_norm,
+            if self._wandb and (idx % self._config.log_steps == 0):
+                wandb.log(
+                    {
+                        "Loss/IoU Loss": iou_loss_.item(),
+                        "Loss/Focal Loss": focal_loss.item(),
+                        "Loss/Total Loss": loss.item(),
+                    },
                 )
-
-                losses.append(loss.item())
-
-                self._grad_scaler.step(self._optimizer)
-                self._grad_scaler.update()
-                self._predictor.model.zero_grad()
 
         return np.mean(losses)
 
@@ -362,21 +361,21 @@ class SAM2Finetuning:
         scores: list = []
 
         self._predictor.model.eval()
-        for sample in self._v_dataloader:
+        for batch in self._v_dataloader:
             for batch_idx in range(self._config.batch_size):
-                if not len(sample["masks"][batch_idx]):
+                if not len(batch["masks"][batch_idx]):
                     continue  # batch with no masks
 
-                masks = self.to_device(sample["masks"][batch_idx], self._device)
+                masks = self.to_device(batch["masks"][batch_idx], self._device)
                 point_coords = self.to_device(
-                    sample["point_coords"][batch_idx],
+                    batch["point_coords"][batch_idx],
                     self._device,
                 )
                 point_labels = self.to_device(
-                    sample["point_labels"][batch_idx],
+                    batch["point_labels"][batch_idx],
                     self._device,
                 )
-                image = self.to_device(sample["images"][batch_idx], self._device)
+                image = self.to_device(batch["images"][batch_idx], self._device)
 
                 score = self._validation_step(
                     image=image,
