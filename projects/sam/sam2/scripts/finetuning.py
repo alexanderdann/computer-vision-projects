@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from torch.utils.data import DataLoader
@@ -22,13 +23,14 @@ class SAM2FinetuningConfig:
     """Configurable finetuning unit for SAM2."""
 
     learning_rate: float = 1e-6
+    weight_decay: float = 1e-3
+    checkpoint_dir: str = "/home/ubuntu/data/checkpoints"
     checkpoint: str = "../checkpoints/sam2.1_hiera_large.pt"
     model_config: str = "configs/sam2.1/sam2.1_hiera_l.yaml"
     batch_size: int = 3
     validation_size: int = 64
     image_size: int = 1024
 
-    # Data
     num_workers: int = 16
     prefetch_factor: int = 10
     shuffle: bool = True
@@ -42,6 +44,9 @@ class SAM2Finetuning:
         config: SAM2FinetuningConfig,
         t_dataloader: DataLoader,
         v_dataloader: DataLoader,
+        *,
+        from_checkpoint: bool = False,
+        with_wandb: bool = False,
     ) -> None:
         """C'tor of SAM2Finetuning.
 
@@ -49,6 +54,8 @@ class SAM2Finetuning:
             config: the finetuning config associated with this project.
             t_dataloader: dataloader for the training phase
             v_dataloader: dataloader for the training phase
+            from_checkpoint: whether the parameters should be initialised
+                from a checkpoint.
 
         Raises:
             ValueError: for the case when finetuning is ran without CUDA support.
@@ -76,18 +83,27 @@ class SAM2Finetuning:
 
         self._optimizer = torch.optim.AdamW(
             params=self._predictor.model.parameters(),
-            lr=1e-6,
-            weight_decay=1e-3,
+            lr=self._config.learning_rate,
+            weight_decay=self._config.weight_decay,
         )
 
         self._grad_scaler = torch.amp.GradScaler("cuda")
 
-    def tune(self, validation_steps: int = 10) -> None:
+        if from_checkpoint:
+            self._load_checkpoint()
+
+        self._wandb = with_wandb
+
+        if self._wandb:
+            wandb.init(project="SAM2 Finetuning")
+
+    def tune(self, checkpoint_steps: int = 250, validation_steps: int = 100) -> None:
         """Tune the SAM2 model with the given data."""
         data_iter = tqdm(self._t_dataloader, desc="Starting finetuning...")
 
         training_steps = 0
         for sample in data_iter:
+            val_str = ""
             for batch_idx in range(self._config.batch_size):
                 if not len(sample["masks"][batch_idx]):
                     data_iter.set_description_str(
@@ -115,10 +131,14 @@ class SAM2Finetuning:
 
                 training_steps += 1
 
-                desc_str = f"Finetuning. Current loss: {loss}"
                 if training_steps % validation_steps == 0:
                     score = self._validate()
-                    desc_str += f" || Current validation score: {score}"
+                    val_str = f" || Last validation score: {score}"
+
+                desc_str = f"Finetuning. Current loss: {loss}" + val_str
+
+                if training_steps % checkpoint_steps == 0:
+                    self._save_checkpoint(training_steps)
 
                 data_iter.set_description_str(desc_str)
 
@@ -209,9 +229,19 @@ class SAM2Finetuning:
                     pred_masks,
                     mask[None],
                     1,
+                    alpha=0.1,
                 )
 
                 loss: torch.Tensor = iou_loss_ + focal_loss
+
+                if self._wandb:
+                    wandb.log(
+                        {
+                            "Loss/IoU Loss": iou_loss_.item(),
+                            "Loss/Focal Loss": focal_loss.item(),
+                            "Loss/Total Loss": loss.item(),
+                        },
+                    )
 
                 loss: torch.Tensor = self._grad_scaler.scale(iou_loss_ + focal_loss)
                 loss.backward()
@@ -272,6 +302,9 @@ class SAM2Finetuning:
                     1,
                 )
 
+                if self._wandb:
+                    wandb.log({"Validation/IoU Score": iou_score.item()})
+
                 scores.append(iou_score.item())
 
         return np.mean(scores)
@@ -301,9 +334,27 @@ class SAM2Finetuning:
                     point_coords=point_coords,
                     point_labels=point_labels,
                 )
-                score.append(scores)
+                scores.append(score)
 
         return np.mean(scores)
+
+    def _save_checkpoint(self, step: int) -> None:
+        checkpoint = {
+            "step": step,
+            "model_state_dict": self._predictor.model.state_dict(),
+            "optimizer_state_dict": self._optimizer.state_dict(),
+            "scaler_state_dict": self._grad_scaler.state_dict(),
+            "config": self._config,
+        }
+
+        checkpoint_path = Path(self._config.checkpoint_dir) / f"sam2_ft_step_{step}.pt"
+        torch.save(checkpoint, checkpoint_path)
+
+    def _load_checkpoint(self) -> None:
+        checkpoint = torch.load(self._config.checkpoint_dir)
+        self._predictor.model.load_state_dict(checkpoint["model_state_dict"])
+        self._optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self._grad_scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
 
 if __name__ == "__main__":
@@ -322,6 +373,21 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Directory containing the CTSpine1K validation dataset",
+    )
+    parser.add_argument(
+        "--with_wandb",
+        type=bool,
+        required=False,
+        default=False,
+        help="Whether we want to use wandb to log the data.",
+    )
+
+    parser.add_argument(
+        "--from_checkpoint",
+        type=bool,
+        required=False,
+        default=False,
+        help="Whether the model should be initialised from a checkpoint.",
     )
     args = parser.parse_args()
 
@@ -363,6 +429,8 @@ if __name__ == "__main__":
         config=config,
         t_dataloader=t_dataloader,
         v_dataloader=v_dataloader,
+        with_wandb=args.with_wandb,
+        from_checkpoint=args.from_checkpoint,
     )
 
     sam2_finetuning.tune()

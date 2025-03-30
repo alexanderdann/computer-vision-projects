@@ -90,7 +90,12 @@ def sigmoid_focal_loss(
 
 
 def iou_loss(
-    inputs, targets, pred_ious, num_objects, loss_on_multimask=False, use_l1_loss=False,
+    inputs,
+    targets,
+    pred_ious,
+    num_objects,
+    loss_on_multimask=False,
+    use_l1_loss=False,
 ):
     """Args:
         inputs: A float tensor of arbitrary shape.
@@ -166,7 +171,9 @@ class MultiStepMultiMasksAndIous(nn.Module):
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch)
         num_objects = torch.tensor(
-            (targets_batch.shape[1]), device=targets_batch.device, dtype=torch.float,
+            (targets_batch.shape[1]),
+            device=targets_batch.device,
+            dtype=torch.float,
         )  # Number of objects is fixed within a batch
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_objects)
@@ -204,16 +211,29 @@ class MultiStepMultiMasksAndIous(nn.Module):
         # accumulate the loss over prediction steps
         losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
         for src_masks, ious, object_score_logits in zip(
-            src_masks_list, ious_list, object_score_logits_list,
+            src_masks_list,
+            ious_list,
+            object_score_logits_list,
         ):
             self._update_losses(
-                losses, src_masks, target_masks, ious, num_objects, object_score_logits,
+                losses,
+                src_masks,
+                target_masks,
+                ious,
+                num_objects,
+                object_score_logits,
             )
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 
     def _update_losses(
-        self, losses, src_masks, target_masks, ious, num_objects, object_score_logits,
+        self,
+        losses,
+        src_masks,
+        target_masks,
+        ious,
+        num_objects,
+        object_score_logits,
     ):
         target_masks = target_masks.expand_as(src_masks)
         # get focal, dice and iou loss on all output masks in a prediction step
@@ -226,11 +246,16 @@ class MultiStepMultiMasksAndIous(nn.Module):
             loss_on_multimask=True,
         )
         loss_multidice = dice_loss(
-            src_masks, target_masks, num_objects, loss_on_multimask=True,
+            src_masks,
+            target_masks,
+            num_objects,
+            loss_on_multimask=True,
         )
         if not self.pred_obj_scores:
             loss_class = torch.tensor(
-                0.0, dtype=loss_multimask.dtype, device=loss_multimask.device,
+                0.0,
+                dtype=loss_multimask.dtype,
+                device=loss_multimask.device,
             )
             target_obj = torch.ones(
                 loss_multimask.shape[0],
@@ -240,7 +265,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
             )
         else:
             target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[
-                ..., None,
+                ...,
+                None,
             ].float()
             loss_class = sigmoid_focal_loss(
                 object_score_logits,

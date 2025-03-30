@@ -172,3 +172,6 @@ cython_debug/
 
 # torchvision data
 *ubyte*
+
+# Weights and Biases
+wandb
