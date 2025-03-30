@@ -22,7 +22,7 @@ class SAM2FinetuningConfig:
     """Configurable finetuning unit for SAM2."""
 
     # Model configuration
-    checkpoint_dir: str = "/home/ubuntu/data/checkpoints"
+    checkpoint_dir: str | None = None
     checkpoint: str = "../checkpoints/sam2.1_hiera_large.pt"
     model_config: str = "configs/sam2.1/sam2.1_hiera_l.yaml"
     image_size: int = 1024
@@ -49,7 +49,6 @@ class SAM2FinetuningConfig:
     shuffle: bool = True
 
     # Checkpoint and evaluation
-    save_checkpoint: bool = True
     validation_steps: int = 1
 
 
@@ -144,11 +143,15 @@ class SAM2Finetuning:
 
     def tune(self) -> None:
         """Tune the SAM2 model with the given data."""
-        for epoch in range(self._config.epochs):
-            data_iter = tqdm(self._t_dataloader, desc="Starting finetuning...")
-            val_str = ""
+        data_iter = tqdm(range(self._config.epochs), desc="Starting finetuning...")
+        for epoch in data_iter:
+            torch.cuda.empty_cache()
 
-            for batch in data_iter:
+            val_str = ""
+            for batch in self._t_dataloader:
+                # performance suicide, but having a dedicated Trainer as in
+                # sam2/training/trainer.py and sam2/training/utils/data_utils.py
+                # would be overkill for finetuning on comparably small dataset
                 for batch_idx in range(self._config.batch_size):
                     if not len(batch["masks"][batch_idx]):
                         data_iter.set_description_str(
@@ -156,16 +159,10 @@ class SAM2Finetuning:
                         )
                         continue  # batch with no masks
 
-                    masks = self.to_device(batch["masks"][batch_idx], self._device)
-                    point_coords = self.to_device(
-                        batch["point_coords"][batch_idx],
-                        self._device,
-                    )
-                    point_labels = self.to_device(
-                        batch["point_labels"][batch_idx],
-                        self._device,
-                    )
-                    image = self.to_device(batch["images"][batch_idx], self._device)
+                    masks = batch["masks"][batch_idx]
+                    point_coords = batch["point_coords"][batch_idx]
+                    point_labels = batch["point_labels"][batch_idx]
+                    image = batch["images"][batch_idx]
 
                     loss = self._training_step(
                         image=image,
@@ -188,28 +185,14 @@ class SAM2Finetuning:
 
                 self._predictor.model.zero_grad()
 
-            if epoch and self._config.save_checkpoint:
+            if epoch and self._config.checkpoint_dir:
                 self._save_checkpoint(epoch)
 
-            if epoch and (self._config.validation_steps % epoch == 0):
+            if epoch and ((epoch + 1) % self._config.validation_steps == 0):
                 score = self._validate()
                 val_str = f" || Current validation score {score}."
 
             self._scheduler.step()
-
-    @classmethod
-    def to_device(cls, data, device):  # noqa: ANN206
-        """Recursively move data to device."""  # noqa: DOC201
-        if isinstance(data, torch.Tensor):
-            return data.to(device)
-        if isinstance(data, (list, tuple)):
-            return [cls.to_device(item, device) for item in data]
-        if isinstance(data, dict):
-            return {k: cls.to_device(v, device) for k, v in data.items()}
-        if isinstance(data, torch.nested.NestedTensor):
-            return data.to(device)
-        # If it's not a tensor or container of tensors, return as is
-        return data
 
     @staticmethod
     def _model_forward(
@@ -270,38 +253,39 @@ class SAM2Finetuning:
                 device_type="cuda",
                 enabled=self._config.amp_enabled,
             ):
+                mask_ = mask.to(self._device)
+
                 if not image_set:
-                    self._predictor.set_image(image)
+                    self._predictor.set_image(image.to(self._device))
                     image_set = True
 
                 pred_masks, prediction_scores = self._model_forward(
                     self._predictor,
-                    points,
-                    labels,
+                    points.to(self._device),
+                    labels.to(self._device),
                 )
 
                 iou_loss_: torch.Tensor = iou_loss(
                     pred_masks,
-                    mask[None],
+                    mask_[None],
                     prediction_scores,
                     1,
                 )
                 focal_loss: torch.Tensor = sigmoid_focal_loss(
                     pred_masks,
-                    mask[None],
+                    mask_[None],
                     1,
                     alpha=0.1,
                 )
 
-            loss: torch.Tensor = (iou_loss_ + focal_loss) / num_masks
-            total_loss = loss if total_loss is None else total_loss + loss
+                loss: torch.Tensor = (iou_loss_ + focal_loss) / num_masks
+                total_loss = loss if total_loss is None else total_loss + loss
 
             losses.append(loss.item())
             iou_losses.append(iou_loss_.item())
             focal_losses.append(focal_loss.item())
 
-        scaled_total_loss: torch.Tensor = self._grad_scaler.scale(total_loss)
-        scaled_total_loss.backward()
+        self._grad_scaler.scale(total_loss).backward()
 
         if self._wandb:
             wandb.log(
@@ -337,23 +321,23 @@ class SAM2Finetuning:
         """
         image_set = False
         scores = []
-        for _, [mask, points, labels] in enumerate(
-            zip(masks, point_coords, point_labels, strict=True),
-        ):
+        for mask, points, labels in zip(masks, point_coords, point_labels, strict=True):
             with torch.no_grad():
+                mask_ = mask.to(self._device)
+
                 if not image_set:
-                    self._predictor.set_image(image)
+                    self._predictor.set_image(image.to(self._device))
                     image_set = True
 
                 pred_masks, prediction_scores = self._model_forward(
                     self._predictor,
-                    points,
-                    labels,
+                    points.to(self._device),
+                    labels.to(self._device),
                 )
 
                 iou_score: torch.Tensor = 1 - iou_loss(
                     pred_masks,
-                    mask[None],
+                    mask_[None],
                     prediction_scores,
                     1,
                 )
@@ -374,16 +358,10 @@ class SAM2Finetuning:
                 if not len(batch["masks"][batch_idx]):
                     continue  # batch with no masks
 
-                masks = self.to_device(batch["masks"][batch_idx], self._device)
-                point_coords = self.to_device(
-                    batch["point_coords"][batch_idx],
-                    self._device,
-                )
-                point_labels = self.to_device(
-                    batch["point_labels"][batch_idx],
-                    self._device,
-                )
-                image = self.to_device(batch["images"][batch_idx], self._device)
+                masks = batch["masks"][batch_idx]
+                point_coords = batch["point_coords"][batch_idx]
+                point_labels = batch["point_labels"][batch_idx]
+                image = batch["images"][batch_idx]
 
                 score = self._validation_step(
                     image=image,
@@ -406,6 +384,7 @@ class SAM2Finetuning:
             "model_state_dict": self._predictor.model.state_dict(),
             "optimizer_state_dict": self._optimizer.state_dict(),
             "scaler_state_dict": self._grad_scaler.state_dict(),
+            "scheduler_state_dict": self._scheduler.state_dict(),
             "config": self._config,
         }
 
@@ -417,6 +396,7 @@ class SAM2Finetuning:
         self._predictor.model.load_state_dict(checkpoint["model_state_dict"])
         self._optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self._grad_scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        self._scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
 
 if __name__ == "__main__":
@@ -443,7 +423,6 @@ if __name__ == "__main__":
         default=False,
         help="Whether we want to use wandb to log the data.",
     )
-
     parser.add_argument(
         "--from_checkpoint",
         type=bool,
@@ -451,7 +430,17 @@ if __name__ == "__main__":
         default=False,
         help="Whether the model should be initialised from a checkpoint.",
     )
+    parser.add_argument(
+        "--gin_config",
+        type=str,
+        required=False,
+        default=None,
+        help="Configurable parameters which can be parsed by gin.",
+    )
     args = parser.parse_args()
+
+    if args.gin_config:
+        nnx.parse_gin_config(args.gin_config)
 
     config = SAM2FinetuningConfig()
 

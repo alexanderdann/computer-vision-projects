@@ -1,0 +1,5 @@
+SAM2FinetuningConfig.checkpoint_dir = "/home/ubuntu/data/checkpoints"
+SAM2FinetuningConfig.epochs = 5
+SAM2FinetuningConfig.amp_enabled = True
+SAM2FinetuningConfig.learning_rate = 1e-8
+SAM2FinetuningConfig.batch_size = 128
