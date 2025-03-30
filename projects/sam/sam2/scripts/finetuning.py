@@ -8,15 +8,13 @@ import torch
 import wandb
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from training.loss_fns import iou_loss, sigmoid_focal_loss
 
 import nnx.data
 from nnx.data.ctspine1k.dataset import CTSpine1K, SAMAdapter
-
-nnx.data.rng = np.random.default_rng(seed=1)
 
 
 @nnx.configurable
@@ -30,6 +28,7 @@ class SAM2FinetuningConfig:
     image_size: int = 1024
 
     # Training parameters
+    amp_enabled: bool = False
     learning_rate: float = 1e-6
     weight_decay: float = 1e-3
     epochs: int = 3
@@ -38,17 +37,21 @@ class SAM2FinetuningConfig:
     # Scheduler configuration
     scheduler_type: str = "cosine"
     min_lr: float = 1e-8
+    start_factor: float = 0.1
+    end_factor: float = 0.8
+    warmup_epochs: int = 2
 
     # Dataset configuration
-    batch_size: int = 32
+    batch_size: int = 64
     validation_size: int = 64
-    num_workers: int = 16
-    prefetch_factor: int = 10
+    num_workers: int = 10
+    prefetch_factor: int = 25
     shuffle: bool = True
 
     # Checkpoint and evaluation
     save_checkpoint: bool = True
     validation_steps: int = 1
+    log_steps: int = 20
 
 
 class SAM2Finetuning:
@@ -74,7 +77,8 @@ class SAM2Finetuning:
             with_wandb: if weights and biases should be used to log metrics
 
         Raises:
-            ValueError: for the case when finetuning is ran without CUDA support.
+            ValueError: for the case when finetuning is ran without CUDA support or
+                invalid config.
 
         """
         self._config = config
@@ -103,13 +107,33 @@ class SAM2Finetuning:
             weight_decay=self._config.weight_decay,
         )
 
-        self._scheduler = CosineAnnealingLR(
+        if self._config.warmup_epochs >= self._config.epochs:
+            msg = "Invalid combination of warmup and total epochs."
+            raise ValueError(msg)
+
+        warmup_scheduler = LinearLR(
             self._optimizer,
-            T_max=self._config.epochs,
+            start_factor=self._config.start_factor,
+            end_factor=self._config.end_factor,
+            total_iters=self._config.warmup_epochs,
+        )
+
+        cosine_scheduler = CosineAnnealingLR(
+            self._optimizer,
+            T_max=self._config.epochs - self._config.warmup_epochs,
             eta_min=self._config.min_lr,
         )
 
-        self._grad_scaler = torch.amp.GradScaler("cuda")
+        self._scheduler = SequentialLR(
+            self._optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[self._config.warmup_epochs],
+        )
+
+        self._grad_scaler = torch.amp.GradScaler(
+            "cuda",
+            enabled=self._config.amp_enabled,
+        )
 
         if from_checkpoint:
             self._load_checkpoint()
@@ -161,6 +185,8 @@ class SAM2Finetuning:
                     desc_str = f"Finetuning. Current loss: {loss}" + val_str
 
                     data_iter.set_description_str(desc_str)
+
+            self._scheduler.step()
 
     @classmethod
     def to_device(cls, data, device):  # noqa: ANN206
@@ -225,10 +251,13 @@ class SAM2Finetuning:
         """
         image_set = False
         losses = []
-        for _, [mask, points, labels] in enumerate(
+        for idx, [mask, points, labels] in enumerate(
             zip(masks, point_coords, point_labels, strict=True),
         ):
-            with torch.amp.autocast(device_type="cuda"):
+            with torch.amp.autocast(
+                device_type="cuda",
+                enabled=self._config.amp_enabled,
+            ):
                 if not image_set:
                     self._predictor.set_image(image)
                     image_set = True
@@ -254,7 +283,7 @@ class SAM2Finetuning:
 
                 loss: torch.Tensor = iou_loss_ + focal_loss
 
-                if self._wandb:
+                if self._wandb and (self._config.log_steps % idx == 0):
                     wandb.log(
                         {
                             "Loss/IoU Loss": iou_loss_.item(),
@@ -437,6 +466,7 @@ if __name__ == "__main__":
         collate_fn=t_dataset.collate_fn,
         num_workers=config.num_workers,
         pin_memory=True,  # should always be True unless there is a good reason
+        persistent_workers=True,
         drop_last=True,
         prefetch_factor=config.num_workers,
         shuffle=config.shuffle,
@@ -448,6 +478,7 @@ if __name__ == "__main__":
         collate_fn=t_dataset.collate_fn,
         num_workers=config.num_workers,
         pin_memory=True,  # should always be True unless there is a good reason
+        persistent_workers=True,
         drop_last=True,
         prefetch_factor=config.num_workers,
         shuffle=config.shuffle,
