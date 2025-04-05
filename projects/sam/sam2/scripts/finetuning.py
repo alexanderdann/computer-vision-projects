@@ -8,13 +8,13 @@ import torch
 import wandb
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from training.loss_fns import iou_loss, sigmoid_focal_loss
 
 import nnx.data
-from nnx.data.ctspine1k.dataset import CTSpine1K, SAMAdapter
+from nnx.data.ctspine1k.dataset import CTSpine1K, CUDALoader, LoadingMode, SAMAdapter
 
 
 @nnx.configurable
@@ -35,16 +35,14 @@ class SAM2FinetuningConfig:
     clip_norm: float = 1.0
 
     # Scheduler configuration
-    scheduler_type: str = "cosine"
-    min_lr: float = 1e-8
-    start_factor: float = 0.1
-    end_factor: float = 0.8
-    warmup_epochs: int = 2
+    step_size: float = 2
+    lr_gamma: float = 0.1
 
     # Dataset configuration
     batch_size: int = 64
     validation_size: int = 64
-    num_workers: int = 10
+    train_workers: int = 3
+    validation_workers: int = 3
     prefetch_factor: int = 25
     shuffle: bool = True
 
@@ -58,8 +56,8 @@ class SAM2Finetuning:
     def __init__(
         self,
         config: SAM2FinetuningConfig,
-        t_dataloader: DataLoader,
-        v_dataloader: DataLoader,
+        t_dataloader: DataLoader | CUDALoader,
+        v_dataloader: DataLoader | CUDALoader,
         *,
         from_checkpoint: bool = False,
         with_wandb: bool = False,
@@ -105,27 +103,10 @@ class SAM2Finetuning:
             weight_decay=self._config.weight_decay,
         )
 
-        if self._config.warmup_epochs >= self._config.epochs:
-            msg = "Invalid combination of warmup and total epochs."
-            raise ValueError(msg)
-
-        warmup_scheduler = LinearLR(
+        self._scheduler = StepLR(
             self._optimizer,
-            start_factor=self._config.start_factor,
-            end_factor=self._config.end_factor,
-            total_iters=self._config.warmup_epochs,
-        )
-
-        cosine_scheduler = CosineAnnealingLR(
-            self._optimizer,
-            T_max=self._config.epochs - self._config.warmup_epochs,
-            eta_min=self._config.min_lr,
-        )
-
-        self._scheduler = SequentialLR(
-            self._optimizer,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[self._config.warmup_epochs],
+            step_size=self._config.step_size,
+            gamma=self._config.lr_gamma,
         )
 
         self._grad_scaler = torch.amp.GradScaler(
@@ -141,7 +122,7 @@ class SAM2Finetuning:
         if self._wandb:
             wandb.init(project="SAM2 Finetuning")
 
-    def tune(self) -> None:
+    def tune(self) -> None:  # noqa: PLR0914
         """Tune the SAM2 model with the given data."""
         data_iter = tqdm(range(self._config.epochs), desc="Starting finetuning...")
         for epoch in data_iter:
@@ -152,7 +133,12 @@ class SAM2Finetuning:
                 # performance suicide, but having a dedicated Trainer as in
                 # sam2/training/trainer.py and sam2/training/utils/data_utils.py
                 # would be overkill for finetuning on comparably small dataset
-                for batch_idx in range(self._config.batch_size):
+                accumulated_iou_losses = []
+                accumulated_focal_losses = []
+
+                batch_size = len(batch["masks"])
+                print(batch_size, len(batch["masks"]))
+                for batch_idx in range(batch_size):
                     if not len(batch["masks"][batch_idx]):
                         data_iter.set_description_str(
                             "Finetuning. Skipped batch with no masks.",
@@ -164,17 +150,29 @@ class SAM2Finetuning:
                     point_labels = batch["point_labels"][batch_idx]
                     image = batch["images"][batch_idx]
 
-                    loss = self._training_step(
+                    iou_losses, focal_losses = self._training_step(
                         image=image,
                         masks=masks,
                         point_coords=point_coords,
                         point_labels=point_labels,
                     )
 
-                    desc_str = f"Finetuning. Current loss: {loss}" + val_str
+                    accumulated_iou_losses.extend(iou_losses)
+                    accumulated_focal_losses.extend(focal_losses)
 
-                    data_iter.set_description_str(desc_str)
+                if not accumulated_iou_losses:
+                    print("No data in batch, continuing...")
+                    continue
 
+                iou_loss = sum(accumulated_iou_losses)
+                focal_loss = sum(accumulated_focal_losses)
+                loss = (iou_loss + focal_loss) / len(accumulated_iou_losses)
+
+                desc_str = f"Finetuning. Current loss: {loss}" + val_str
+
+                data_iter.set_description_str(desc_str)
+
+                self._grad_scaler.scale(loss).backward()
                 self._grad_scaler.unscale_(self._optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self._predictor.model.parameters(),
@@ -185,11 +183,20 @@ class SAM2Finetuning:
 
                 self._predictor.model.zero_grad()
 
+                if self._wandb:
+                    wandb.log(
+                        {
+                            "Loss/IoU Loss": iou_loss.item(),
+                            "Loss/Focal Loss": focal_loss.item(),
+                            "Loss/Total Loss": loss.item(),
+                        },
+                    )
+
             if epoch and self._config.checkpoint_dir:
                 self._save_checkpoint(epoch)
 
             if epoch and ((epoch + 1) % self._config.validation_steps == 0):
-                score = self._validate()
+                score = -1  # self._validate()
                 val_str = f" || Current validation score {score}."
 
             self._scheduler.step()
@@ -238,13 +245,10 @@ class SAM2Finetuning:
             point_labels: labels for each point, whether it is foreground or background.
 
         Returns:
-            Average loss over the masks.
+            Losses for the given sample.
 
         """
-        num_masks = len(masks)
         image_set = False
-        total_loss: torch.Tensor | None = None
-        losses = []
         iou_losses = []
         focal_losses = []
 
@@ -278,26 +282,10 @@ class SAM2Finetuning:
                     alpha=0.1,
                 )
 
-                loss: torch.Tensor = (iou_loss_ + focal_loss) / num_masks
-                total_loss = loss if total_loss is None else total_loss + loss
+            iou_losses.append(iou_loss_)
+            focal_losses.append(focal_loss)
 
-            losses.append(loss.item())
-            iou_losses.append(iou_loss_.item())
-            focal_losses.append(focal_loss.item())
-
-        self._grad_scaler.scale(total_loss).backward()
-
-        if self._wandb:
-            wandb.log(
-                {
-                    "Loss/IoU Loss": np.mean(iou_losses),
-                    "Loss/Focal Loss": np.mean(focal_losses),
-                    "Loss/Total Loss": total_loss.item(),
-                    "Batch/Num Masks": num_masks,
-                },
-            )
-
-        return total_loss.item()
+        return iou_losses, focal_losses
 
     def _validation_step(
         self,
@@ -342,9 +330,6 @@ class SAM2Finetuning:
                     1,
                 )
 
-                if self._wandb:
-                    wandb.log({"Validation/IoU Score": iou_score.item()})
-
                 scores.append(iou_score.item())
 
         return np.mean(scores)
@@ -353,8 +338,9 @@ class SAM2Finetuning:
         scores: list = []
 
         self._predictor.model.eval()
-        for batch in self._v_dataloader:
-            for batch_idx in range(self._config.batch_size):
+        for batch in tqdm(self._v_dataloader, desc="Running validation."):
+            batch_size = len(batch["masks"])
+            for batch_idx in range(batch_size):
                 if not len(batch["masks"][batch_idx]):
                     continue  # batch with no masks
 
@@ -375,6 +361,9 @@ class SAM2Finetuning:
         self._predictor.model.image_encoder.eval()
         self._predictor.model.sam_mask_decoder.train()
         self._predictor.model.sam_prompt_encoder.train()
+
+        if self._wandb:
+            wandb.log({"Validation/IoU Score": np.mean(scores)})
 
         return np.mean(scores)
 
@@ -448,43 +437,36 @@ if __name__ == "__main__":
     validation_dir = Path(args.validation_dir)
 
     t_dataset = SAMAdapter(
-        dataset=CTSpine1K(cache_dir=training_dir),
+        dataset=CTSpine1K(cache_dir=training_dir, loading_mode=LoadingMode.PRELOAD_RAM),
         image_size=config.image_size,
     )
     v_dataset = SAMAdapter(
-        dataset=CTSpine1K(cache_dir=validation_dir),
+        dataset=CTSpine1K(
+            cache_dir=validation_dir,
+            loading_mode=LoadingMode.PRELOAD_RAM,
+        ),
         image_size=config.image_size,
     )
 
-    t_dataloader = DataLoader(
-        t_dataset,
+    t_dataloader = CUDALoader(
+        dataset=t_dataset,
         batch_size=config.batch_size,
         collate_fn=t_dataset.collate_fn,
-        num_workers=config.num_workers,
-        pin_memory=True,  # should always be True unless there is a good reason
-        persistent_workers=True,
         drop_last=True,
-        prefetch_factor=config.num_workers,
-        shuffle=config.shuffle,
     )
 
-    v_dataloader = DataLoader(
-        v_dataset,
+    v_dataloader = CUDALoader(
+        dataset=v_dataset,
         batch_size=config.validation_size,
-        collate_fn=t_dataset.collate_fn,
-        num_workers=config.num_workers,
-        pin_memory=True,  # should always be True unless there is a good reason
-        persistent_workers=True,
+        collate_fn=v_dataset.collate_fn,
         drop_last=True,
-        prefetch_factor=config.num_workers,
-        shuffle=config.shuffle,
     )
 
     sam2_finetuning = SAM2Finetuning(
         config=config,
         t_dataloader=t_dataloader,
         v_dataloader=v_dataloader,
-        with_wandb=args.with_wandb,
+        with_wandb=False,  # args.with_wandb,
         from_checkpoint=args.from_checkpoint,
     )
 
