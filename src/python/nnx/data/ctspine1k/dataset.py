@@ -1,8 +1,10 @@
 """All components related to loading CTSpine1K data."""
 
+from collections.abc import Iterator
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, Callable, TypeVar
 
 import cv2
 import nibabel as nib
@@ -10,6 +12,7 @@ import numpy as np
 import torch
 from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt
 from torch.utils.data import Dataset
+from tqdm.auto import tqdm
 
 import nnx.data
 from nnx.data.data_structures import AnnotationSample, ImagePrompt, SAMSample
@@ -21,6 +24,13 @@ BOUND = dict[
     list[list[torch.Tensor]],
 ]
 SAMTorchSample = TypeVar("SAMTorchSample", bound=BOUND)
+
+
+class LoadingMode(Enum):
+    """Defines how dataset samples are loaded."""
+
+    ON_DEMAND = "on_demand"  # Load each sample when requested
+    PRELOAD_RAM = "preload_ram"  # Preload as much as possible data into RAM
 
 
 def sample_positive_prompt(mask: np.ndarray) -> ImagePrompt:
@@ -163,6 +173,7 @@ class CTSpine1K:
     def __init__(
         self,
         cache_dir: Path,
+        loading_mode: LoadingMode = LoadingMode.ON_DEMAND,
         *,
         volumetric: bool = False,
     ) -> None:
@@ -170,9 +181,11 @@ class CTSpine1K:
 
         Args:
             cache_dir: points to the directory where the data is downloaded.
+            loading_mode: loading logic of data
             volumetric: whether we want to use 3D or 2D data.
 
         """
+        self._loading_mode: LoadingMode = loading_mode
         self._volumetric: bool = volumetric
 
         if self.volumetric:
@@ -180,6 +193,11 @@ class CTSpine1K:
             raise NotImplementedError(msg)
 
         self._lookup = self._validate_check(cache_dir=cache_dir)
+
+        self._loaded_volumes = None
+        if self._loading_mode == LoadingMode.PRELOAD_RAM:
+            self._loaded_volumes: dict[Path, tuple[np.ndarray, np.ndarray]] = {}
+            self._preload_all_volumes()
 
         print(f"Found {len(self)} samples.")
 
@@ -231,6 +249,23 @@ class CTSpine1K:
     def _sorted_lookup(self) -> list[Path]:
         return sorted(self._lookup.keys())
 
+    def _preload_all_volumes(self) -> None:
+        paths = list(self._lookup.keys())
+        progress = tqdm(paths)
+
+        for path in progress:
+            if path in self._loaded_volumes:
+                return
+
+            img_path = path / "image.nii.gz"
+            seg_path = path / "segmentation.nii.gz"
+
+            img_vol = nib.load(img_path).get_fdata()
+            seg_vol = nib.load(seg_path).get_fdata()
+
+            # Store in memory
+            self._loaded_volumes[path] = (img_vol, seg_vol)
+
     @staticmethod
     def _get_sample_length(file_path: Path) -> int:
         expected_ndim = 3
@@ -238,6 +273,24 @@ class CTSpine1K:
         shape = img.shape
         assert len(shape) == expected_ndim
         return shape[2]
+
+    def _get_image_pair(
+        self,
+        path: Path,
+        slice_idx: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self._loaded_volumes is not None:
+            raw_ct, seg_ct = self._loaded_volumes[path]
+
+            image = np.squeeze(raw_ct[:, :, slice_idx]).copy()
+            seg_ct = np.squeeze(seg_ct[:, :, slice_idx]).copy()
+
+            return (image, seg_ct)
+
+        return (
+            self._sliced_sample(path / "image.nii.gz", slice_idx),
+            self._sliced_sample(path / "segmentation.nii.gz", slice_idx),
+        )
 
     @staticmethod
     def _sliced_sample(path: Path, slice_idx: int, axis: int = 2) -> np.ndarray:
@@ -274,10 +327,7 @@ class CTSpine1K:
             upper = lower + value
 
             if lower <= index < upper:
-                return (
-                    self._sliced_sample(path / "image.nii.gz", index - lower),
-                    self._sliced_sample(path / "segmentation.nii.gz", index - lower),
-                )
+                return self._get_image_pair(path, index - lower)
 
             lower = upper
 
@@ -296,7 +346,9 @@ class CTSpine1K:
         """
         input_image, annotation = self._resolve_index(index)
 
-        input_image = cv2.normalize(input_image, None, 0, 255, cv2.NORM_MINMAX) / 255
+        input_image = input_image.astype(np.float32)
+        input_image = cv2.normalize(input_image, None, 0, 1, cv2.NORM_MINMAX)
+        input_image = np.clip(input_image, 0, 1)  # for numerical instability safety
 
         bitmasks = []
         for c_idx in set(np.unique(annotation)):
@@ -440,3 +492,113 @@ class SAMAdapter(Dataset):
             bitmasks=sample.bitmasks,
             points=points,
         )
+
+
+class CUDALoader:
+    """Simple class keeps data in on GPU at all time."""
+
+    def __init__(
+        self,
+        dataset: SAMAdapter,
+        batch_size: int,
+        collate_fn: Callable,
+        *,
+        drop_last: bool = False,
+        delete: bool = True,
+    ) -> None:
+        """Load entire dataset to CUDA memory and serve batches directly from GPU.
+
+        Raises:
+            RuntimeError: using this class with no CUDA device available.
+
+        Args:
+            dataset: dataset to load
+            batch_size: amount of samples within a batch.
+            collate_fn: function to merge samples into batches.
+            drop_last: if the last batch which potentially is not same
+                as batch size is dropped.
+            delete: whether to delete the CPU version of the dataset.
+
+        """
+        if not torch.cuda.is_available():
+            msg = "CUDALoader requires a CUDA-capable GPU"
+            raise RuntimeError(msg)
+
+        free_memory = (
+            torch.cuda.get_device_properties(0).total_memory
+            - torch.cuda.memory_allocated()
+        )
+        free_gb = free_memory / (1024**3)
+        print(f"Available CUDA memory: {free_gb:.2f} GB")
+
+        self._dataset = dataset
+        self._collate_fn = collate_fn
+        self._batch_size = batch_size
+        self._drop_last = drop_last
+
+        # Load individual samples to GPU first
+        self._cuda_samples = []
+        self._prefetch_to_cuda()
+
+        if delete:
+            del dataset
+
+    def _recursive_cuda(self, item: Any) -> Any:
+        """Move data structure with tensors to CUDA recursively.
+
+        Returns:
+            The same data as at input but moved to CUDA if possible.
+
+        """
+        if isinstance(item, torch.Tensor):
+            return item.cuda(non_blocking=True)
+        if isinstance(item, dict):
+            return {k: self._recursive_cuda(v) for k, v in item.items()}
+        if isinstance(item, list):
+            return [self._recursive_cuda(x) for x in item]
+        if isinstance(item, tuple):
+            return tuple(self._recursive_cuda(x) for x in item)
+        return item  # Non-tensor types remain unchanged
+
+    def _prefetch_to_cuda(self) -> None:
+        """Load all individual samples to GPU memory."""
+        print("Preloading dataset to CUDA memory...")
+        dataset_size = len(self._dataset)
+        batch_data = []
+        for idx in tqdm(range(dataset_size), desc="Moving data to GPU"):
+            sample = self._dataset[idx]
+            batch_data.append(sample)
+
+            if len(batch_data) == self._batch_size:
+                cuda_sample = self._recursive_cuda(
+                    self._collate_fn(batch_data),
+                )
+                self._cuda_samples.append(cuda_sample)
+                batch_data = []
+
+        if batch_data and not self._drop_last:
+            cuda_sample = self._recursive_cuda(
+                self._collate_fn(batch_data),
+            )
+            self._cuda_samples.append(cuda_sample)
+
+        print(f"Dataset preloaded: {len(self._cuda_samples)} samples")
+
+    def __iter__(self) -> Iterator:
+        """Iterate through batches, with proper shuffling and collation."""
+        yield from self._cuda_samples
+
+    def __len__(self) -> int:
+        """Return the number of batches.
+
+        Returns:
+            Number of samples.
+
+        """
+        return len(self._cuda_samples)
+
+    def clear_cache(self) -> None:
+        """Free GPU memory."""
+        self._cuda_samples = None
+        torch.cuda.empty_cache()
+        print("GPU cache cleared")
