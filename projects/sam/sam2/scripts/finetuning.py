@@ -135,18 +135,22 @@ class SAM2Finetuning:
                 self._save_checkpoint(epoch)
 
             if epoch and ((epoch + 1) % self._config.validation_steps == 0):
-                score = self._validate()
+                self._validate()
 
             self._scheduler.step()
 
-    def _process_batch(self, batch: dict) -> None:
-        # performance suicide, but having a dedicated Trainer as in
-        # sam2/training/trainer.py and sam2/training/utils/data_utils.py
-        # would be overkill for finetuning on comparably small dataset
+    def _process_batch(self, batch: dict) -> None:  # noqa: PLR0914
+        # performance suicide with the two for loops but having a dedicated
+        # Trainer as in sam2/training/trainer.py and sam2/training/utils/data_utils.py
+        # would be overkill for finetuning on comparably small dataset and currently
+        # starving GPU is not the issue in experiments
         self._optimizer.zero_grad()
         total_losses = []
         iou_losses = []
         focal_losses = []
+
+        total_loss = None
+        valid_samples = 0
 
         current_batch_size = len(batch["masks"])
         for batch_idx in range(current_batch_size):
@@ -159,7 +163,7 @@ class SAM2Finetuning:
             image = batch["images"][batch_idx]
 
             image_set = False
-            total_loss = None
+            sample_loss = None
             valid_masks = 0
             for mask, points, labels in zip(
                 masks,
@@ -206,21 +210,28 @@ class SAM2Finetuning:
 
                 valid_masks += 1
                 current_loss = iou_loss_ + focal_loss
-                total_loss = (
-                    current_loss if current_loss is None else total_loss + current_loss
+                sample_loss = (
+                    current_loss if sample_loss is None else sample_loss + current_loss
                 )
 
-                focal_losses.append(iou_loss_.item())
-                iou_losses.append(focal_loss.item())
+                focal_losses.append(focal_loss.item())
+                iou_losses.append(iou_loss_.item())
 
-            total_loss /= valid_masks
-            total_losses.append(total_loss.item())
+            if valid_masks:
+                sample_loss /= valid_masks
 
-            self._grad_scaler.scale(current_loss).backward()
+                total_loss = (
+                    sample_loss if total_loss is None else sample_loss + total_loss
+                )
+                total_losses.append(sample_loss.item())
+                valid_samples += 1
 
-        if image_set is None:
+        if total_loss is None:
             print("No data in batch, continuing...")
             return
+
+        total_loss /= valid_samples
+        self._grad_scaler.scale(total_loss).backward()
 
         self._grad_scaler.unscale_(self._optimizer)
         torch.nn.utils.clip_grad_norm_(
