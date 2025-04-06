@@ -28,7 +28,7 @@ if os.path.isdir(os.path.join(sam2.__path__[0], "sam2")):
         "This is not supported since the `sam2` Python package could be shadowed by the "
         "repository name (the repository is also named `sam2` and contains the Python package "
         "in `sam2/sam2`). Please run Python from another directory (e.g. from the repo dir "
-        "rather than its parent dir, or from your home directory) after installing SAM 2."
+        "rather than its parent dir, or from your home directory) after installing SAM 2.",
     )
 
 
@@ -77,7 +77,6 @@ def build_sam2(
     apply_postprocessing=True,
     **kwargs,
 ):
-
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()
         hydra_overrides_extra += [
@@ -157,18 +156,23 @@ def build_sam2_hf(model_id, **kwargs):
 def build_sam2_video_predictor_hf(model_id, **kwargs):
     config_name, ckpt_path = _hf_download(model_id)
     return build_sam2_video_predictor(
-        config_file=config_name, ckpt_path=ckpt_path, **kwargs
+        config_file=config_name,
+        ckpt_path=ckpt_path,
+        **kwargs,
     )
 
 
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
-        sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)["model"]
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        keys = set(sd.keys())
+        sd = sd["model_state_dict"] if "model_state_dict" in keys else sd["model"]
+
         missing_keys, unexpected_keys = model.load_state_dict(sd)
         if missing_keys:
             logging.error(missing_keys)
-            raise RuntimeError()
+            raise RuntimeError
         if unexpected_keys:
             logging.error(unexpected_keys)
-            raise RuntimeError()
+            raise RuntimeError
         logging.info("Loaded checkpoint sucessfully")
