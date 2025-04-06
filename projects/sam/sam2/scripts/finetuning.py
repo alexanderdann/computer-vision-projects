@@ -31,11 +31,13 @@ class SAM2FinetuningConfig:
     amp_enabled: bool = False
     learning_rate: float = 1e-6
     weight_decay: float = 1e-3
+    focal_weight: float = 20.0
+    iou_weight: int = 1.0
     epochs: int = 3
     clip_norm: float = 1.0
 
     # Scheduler configuration
-    step_size: float = 2
+    step_size: float = 4
     lr_gamma: float = 0.1
 
     # Dataset configuration
@@ -122,84 +124,120 @@ class SAM2Finetuning:
         if self._wandb:
             wandb.init(project="SAM2 Finetuning")
 
-    def tune(self) -> None:  # noqa: PLR0914
+    def tune(self) -> None:
         """Tune the SAM2 model with the given data."""
         data_iter = tqdm(range(self._config.epochs), desc="Starting finetuning...")
         for epoch in data_iter:
-            torch.cuda.empty_cache()
-
-            val_str = ""
             for batch in self._t_dataloader:
-                # performance suicide, but having a dedicated Trainer as in
-                # sam2/training/trainer.py and sam2/training/utils/data_utils.py
-                # would be overkill for finetuning on comparably small dataset
-                accumulated_iou_losses = []
-                accumulated_focal_losses = []
-
-                batch_size = len(batch["masks"])
-                print(batch_size, len(batch["masks"]))
-                for batch_idx in range(batch_size):
-                    if not len(batch["masks"][batch_idx]):
-                        data_iter.set_description_str(
-                            "Finetuning. Skipped batch with no masks.",
-                        )
-                        continue  # batch with no masks
-
-                    masks = batch["masks"][batch_idx]
-                    point_coords = batch["point_coords"][batch_idx]
-                    point_labels = batch["point_labels"][batch_idx]
-                    image = batch["images"][batch_idx]
-
-                    iou_losses, focal_losses = self._training_step(
-                        image=image,
-                        masks=masks,
-                        point_coords=point_coords,
-                        point_labels=point_labels,
-                    )
-
-                    accumulated_iou_losses.extend(iou_losses)
-                    accumulated_focal_losses.extend(focal_losses)
-
-                if not accumulated_iou_losses:
-                    print("No data in batch, continuing...")
-                    continue
-
-                iou_loss = sum(accumulated_iou_losses)
-                focal_loss = sum(accumulated_focal_losses)
-                loss = (iou_loss + focal_loss) / len(accumulated_iou_losses)
-
-                desc_str = f"Finetuning. Current loss: {loss}" + val_str
-
-                data_iter.set_description_str(desc_str)
-
-                self._grad_scaler.scale(loss).backward()
-                self._grad_scaler.unscale_(self._optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self._predictor.model.parameters(),
-                    max_norm=self._config.clip_norm,
-                )
-                self._grad_scaler.step(self._optimizer)
-                self._grad_scaler.update()
-
-                self._predictor.model.zero_grad()
-
-                if self._wandb:
-                    wandb.log(
-                        {
-                            "Loss/IoU Loss": iou_loss.item(),
-                            "Loss/Focal Loss": focal_loss.item(),
-                            "Loss/Total Loss": loss.item(),
-                        },
-                    )
+                self._process_batch(batch)
 
             if epoch and self._config.checkpoint_dir:
                 self._save_checkpoint(epoch)
 
             if epoch and ((epoch + 1) % self._config.validation_steps == 0):
-                score = -1  # self._validate()
-                val_str = f" || Current validation score {score}."
+                score = self._validate()
 
             self._scheduler.step()
+
+    def _process_batch(self, batch: dict) -> None:
+        # performance suicide, but having a dedicated Trainer as in
+        # sam2/training/trainer.py and sam2/training/utils/data_utils.py
+        # would be overkill for finetuning on comparably small dataset
+        self._optimizer.zero_grad()
+        total_losses = []
+        iou_losses = []
+        focal_losses = []
+
+        current_batch_size = len(batch["masks"])
+        for batch_idx in range(current_batch_size):
+            if not len(batch["masks"][batch_idx]):
+                continue  # sample with no masks
+
+            masks = batch["masks"][batch_idx]
+            point_coords = batch["point_coords"][batch_idx]
+            point_labels = batch["point_labels"][batch_idx]
+            image = batch["images"][batch_idx]
+
+            image_set = False
+            total_loss = None
+            valid_masks = 0
+            for mask, points, labels in zip(
+                masks,
+                point_coords,
+                point_labels,
+                strict=True,
+            ):
+                with torch.amp.autocast(
+                    device_type="cuda",
+                    enabled=self._config.amp_enabled,
+                ):
+                    mask_ = mask.to(self._device)
+
+                    if not image_set:
+                        self._predictor.set_image(image.to(self._device))
+                        image_set = True
+
+                    pred_masks, prediction_scores = self._model_forward(
+                        self._predictor,
+                        points.to(self._device),
+                        labels.to(self._device),
+                    )
+                    focal_loss: torch.Tensor = (
+                        sigmoid_focal_loss(
+                            pred_masks,
+                            mask_[None],
+                            1,
+                            alpha=0.1,
+                            loss_on_multimask=True,
+                        )
+                        * self._config.focal_weight
+                    )
+
+                    iou_loss_: torch.Tensor = (
+                        iou_loss(
+                            pred_masks,
+                            mask_[None],
+                            prediction_scores,
+                            1,
+                            loss_on_multimask=False,
+                        )
+                        * self._config.iou_weight
+                    )
+
+                valid_masks += 1
+                current_loss = iou_loss_ + focal_loss
+                total_loss = (
+                    current_loss if current_loss is None else total_loss + current_loss
+                )
+
+                focal_losses.append(iou_loss_.item())
+                iou_losses.append(focal_loss.item())
+
+            total_loss /= valid_masks
+            total_losses.append(total_loss.item())
+
+            self._grad_scaler.scale(current_loss).backward()
+
+        if image_set is None:
+            print("No data in batch, continuing...")
+            return
+
+        self._grad_scaler.unscale_(self._optimizer)
+        torch.nn.utils.clip_grad_norm_(
+            self._predictor.model.parameters(),
+            max_norm=self._config.clip_norm,
+        )
+        self._grad_scaler.step(self._optimizer)
+        self._grad_scaler.update()
+
+        if self._wandb:
+            wandb.log(
+                {
+                    "Losses/Total": np.mean(total_losses),
+                    "Losses/IoU": np.mean(iou_losses),
+                    "Losses/Focal": np.mean(focal_losses),
+                },
+            )
 
     @staticmethod
     def _model_forward(
@@ -225,67 +263,6 @@ class SAM2Finetuning:
         pred_masks = predictor.mask_postprocessing(low_res_masks)
 
         return pred_masks, prediction_scores
-
-    def _training_step(
-        self,
-        image: torch.Tensor,
-        masks: list[torch.Tensor],
-        point_coords: list[torch.Tensor],
-        point_labels: list[torch.Tensor],
-    ) -> float:
-        """Compute a training step for the given batch.
-
-        For details see Table 12 in https://arxiv.org/pdf/2408.00714.
-
-
-        Args:
-            image: the image for which to do the step.
-            masks: list containing the masks for the image.
-            point_coords: list containing the points for the image.
-            point_labels: labels for each point, whether it is foreground or background.
-
-        Returns:
-            Losses for the given sample.
-
-        """
-        image_set = False
-        iou_losses = []
-        focal_losses = []
-
-        for mask, points, labels in zip(masks, point_coords, point_labels, strict=True):
-            with torch.amp.autocast(
-                device_type="cuda",
-                enabled=self._config.amp_enabled,
-            ):
-                mask_ = mask.to(self._device)
-
-                if not image_set:
-                    self._predictor.set_image(image.to(self._device))
-                    image_set = True
-
-                pred_masks, prediction_scores = self._model_forward(
-                    self._predictor,
-                    points.to(self._device),
-                    labels.to(self._device),
-                )
-
-                iou_loss_: torch.Tensor = iou_loss(
-                    pred_masks,
-                    mask_[None],
-                    prediction_scores,
-                    1,
-                )
-                focal_loss: torch.Tensor = sigmoid_focal_loss(
-                    pred_masks,
-                    mask_[None],
-                    1,
-                    alpha=0.1,
-                )
-
-            iou_losses.append(iou_loss_)
-            focal_losses.append(focal_loss)
-
-        return iou_losses, focal_losses
 
     def _validation_step(
         self,
@@ -334,7 +311,7 @@ class SAM2Finetuning:
 
         return np.mean(scores)
 
-    def _validate(self) -> float:
+    def _validate(self) -> None:
         scores: list = []
 
         self._predictor.model.eval()
@@ -364,8 +341,6 @@ class SAM2Finetuning:
 
         if self._wandb:
             wandb.log({"Validation/IoU Score": np.mean(scores)})
-
-        return np.mean(scores)
 
     def _save_checkpoint(self, step: int) -> None:
         checkpoint = {
@@ -407,16 +382,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--with_wandb",
-        type=bool,
-        required=False,
-        default=False,
+        action="store_true",
         help="Whether we want to use wandb to log the data.",
     )
     parser.add_argument(
         "--from_checkpoint",
-        type=bool,
-        required=False,
-        default=False,
+        action="store_true",
         help="Whether the model should be initialised from a checkpoint.",
     )
     parser.add_argument(
@@ -448,11 +419,16 @@ if __name__ == "__main__":
         image_size=config.image_size,
     )
 
-    t_dataloader = CUDALoader(
+    t_dataloader = DataLoader(
         dataset=t_dataset,
         batch_size=config.batch_size,
         collate_fn=t_dataset.collate_fn,
         drop_last=True,
+        pin_memory=True,
+        num_workers=config.train_workers,
+        persistent_workers=True,
+        prefetch_factor=config.prefetch_factor,
+        shuffle=config.shuffle,
     )
 
     v_dataloader = CUDALoader(
@@ -466,7 +442,7 @@ if __name__ == "__main__":
         config=config,
         t_dataloader=t_dataloader,
         v_dataloader=v_dataloader,
-        with_wandb=False,  # args.with_wandb,
+        with_wandb=args.with_wandb,
         from_checkpoint=args.from_checkpoint,
     )
 

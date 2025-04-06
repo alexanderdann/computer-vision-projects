@@ -111,6 +111,7 @@ def iou_loss(
         IoU loss tensor
 
     """
+    inputs = inputs.sigmoid()
     assert inputs.dim() == 4 and targets.dim() == 4
     pred_mask = inputs.flatten(2) > 0
     gt_mask = targets.flatten(2) > 0
