@@ -1,20 +1,33 @@
 """Logic related to downloading the data from Google Drive.
 
-As of the 21.04.2025, authors of https://github.com/MIRACLE-Center/CTSpine1K
-mentioned that the go to way is taking the data from Google Drive. Using the UI and
-placing the data somewhere on the machine is a deasible way but is not streamlined and
-problematic when working on a remote machine.
+As of April 21, 2025, the authors of https://github.com/MIRACLE-Center/CTSpine1K
+recommend accessing the dataset via Google Drive. While manual downloading through
+the web UI is possible, it becomes cumbersome when working on remote machines or
+when automating dataset preparation workflows.
 
-To make life easier this code programmatically fetches data from the drive and places
-it in the specified directory from which it can easily be used to for the actual
-training pipeline. There were many experiments done to see which approach is the best
-maintainable and easiest out of the box. Unfortuantely for directories with more than
-50 files there is no easy fix and unfortunately the CTSpine1K dataset in Google Drive
-have directories with hundreds of files. Alternatives such as the official Google API
-or rclone all need configuration overhead in the beginning which is unwanted. It should
-work out of the box from anywhere. Hence the decision was to just manually save all
-shareable links. This has the downside of manually adapting the files in case of changes
-and if it gets easier over the time definitely something to change
+Several approaches were evaluated for robustness, maintainability, and ease of use:
+
+1. Google Drive API: Requires OAuth setup and credentials management, adding
+   configuration overhead that complicates deployment.
+
+2. Third-party tools (e.g., rclone): Also require initial configuration and
+   may have dependencies that affect portability.
+
+3. Web scraping with link extraction: For directories with >50 files, Google Drive's
+   pagination and dynamic loading makes this approach unreliable.
+
+4. Manual shareable links collection (current approach): Most reliable solution that
+   works "out of the box" without configuration, though requires manual maintenance.
+
+The implementation uses a collection of manually saved shareable links stored in text
+files within a 'shareable' directory. These links are processed to download files
+concurrently using multiple threads, with retry logic for resilience. In case the
+pagination approach becomes more robust, it is also possible to switch, but only the
+case of expected active changes to the files in Google Drive.
+
+This module is designed to be the first step in a data preparation pipeline, ensuring
+that researchers can quickly obtain the CTSpine1K dataset programmatically without
+manual intervention, regardless of their computing environment.
 
 """
 
@@ -64,7 +77,7 @@ def download_from_google_drive(
         # Submit download tasks to the executor
         future_to_link = {
             executor.submit(_download_file_from_google_drive_link, link, path): link
-            for link, path in list(workload.items())[:10]
+            for link, path in list(workload.items())
         }
 
         # Process results as they complete
@@ -85,7 +98,7 @@ def download_from_google_drive(
                 attempt += 1
 
 
-def _download_file_from_google_drive_link(
+def _download_file_from_google_drive_link(  # noqa: C901, PLR0911, PLR0912, PLR0914, PLR0915
     shareable_link: str,
     destination_folder: Path,
 ) -> Path | None:
@@ -122,7 +135,7 @@ def _download_file_from_google_drive_link(
 
     # Check if we got the file directly or a confirmation page
     if "Content-Disposition" in response.headers:
-        filename = extract_filename(response.headers.get("Content-Disposition", ""))
+        filename = _extract_filename(response.headers.get("Content-Disposition", ""))
         if not filename:
             filename = f"drive_file_{file_id}"
 
@@ -160,7 +173,9 @@ def _download_file_from_google_drive_link(
             and "Content-Disposition" in response.headers
         ):
             # Success - got the file after confirmation
-            filename = extract_filename(response.headers.get("Content-Disposition", ""))
+            filename = _extract_filename(
+                response.headers.get("Content-Disposition", ""),
+            )
             if not filename:
                 filename = f"drive_file_{file_id}"
 
@@ -192,7 +207,7 @@ def _download_file_from_google_drive_link(
         if "text/html" not in content_type or "Content-Disposition" in response.headers:
             # Try to get filename from Content-Disposition, or use default
             if "Content-Disposition" in response.headers:
-                filename = extract_filename(
+                filename = _extract_filename(
                     response.headers.get("Content-Disposition", ""),
                 )
             else:
@@ -239,7 +254,7 @@ def _download_file_from_google_drive_link(
             # Verify we're not getting HTML again
             if "text/html" not in content_type:
                 if not filename:
-                    filename = extract_filename(
+                    filename = _extract_filename(
                         response.headers.get("Content-Disposition", ""),
                     )
                 if not filename:
@@ -271,27 +286,15 @@ def _download_file_from_google_drive_link(
     return None
 
 
-def extract_filename(content_disposition):
-    """Helper function to extract filename from Content-Disposition header."""
-    filename = None
+def _extract_filename(content_disposition: str) -> str:
+    """Help function to extract filename from Content-Disposition header.
 
-    # Try to extract filename*= format first (handles UTF-8 encoding)
-    fname_match = re.search(r"filename\*=([^;]+)", content_disposition)
-    if fname_match:
-        try:
-            parts = fname_match.group(1).split("''", 1)
-            if len(parts) == 2:
-                filename = unquote(parts[1])
-        except Exception:
-            pass
+    Returns:
+        The name of file as in Google Drive.
 
-    # If that didn't work, try the simpler filename= format
-    if not filename:
-        fname_match_fallback = re.search(r'filename="?([^"]+)"?', content_disposition)
-        if fname_match_fallback:
-            filename = unquote(fname_match_fallback.group(1))
-
-    return filename
+    """
+    fname_match = re.search(r'filename="?([^"]+)"?', content_disposition)
+    return unquote(fname_match.group(1))
 
 
 def _save_response_to_file(
