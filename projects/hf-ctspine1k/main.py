@@ -1,7 +1,6 @@
 """Wrapper to load the actual data using Python."""
 
 import re
-from enum import Enum, auto
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -9,18 +8,6 @@ from typing import Literal
 import nibabel as nib
 import numpy as np
 from download import download_from_google_drive
-
-
-class DatasetSplit(Enum):
-    """Specificies the dataset of relevance."""
-
-    TRAINING = auto()
-    VALIDATION = auto()
-    TEST = auto()
-    COLONOG = auto()
-    HNSCC = auto()
-    MSDT10 = auto()
-    COVID19 = auto()
 
 
 class CTSpine1K:
@@ -56,10 +43,6 @@ class CTSpine1K:
 
         self._volumetric: bool = volumetric
         self._split: str = split
-
-        if self.volumetric:
-            msg = "Volumetric processing currently not supported"
-            raise NotImplementedError(msg)
 
         self._loaded_split = self._load_split(self._split)
 
@@ -147,7 +130,10 @@ class CTSpine1K:
         ]
 
         if len(data_candidates) != len(label_candidates):
-            msg = f"Data and labels mismatch. Data is probably not downloaded fully. Got {len(data_candidates)} vs {len(label_candidates)}"
+            msg = (
+                "Data and labels mismatch. Data is probably not downloaded fully. ",
+                f"Got {len(data_candidates)} vs {len(label_candidates)}",
+            )
             raise RuntimeError(msg)
 
         pairs = zip(data_candidates, label_candidates, strict=True)
@@ -197,17 +183,6 @@ class CTSpine1K:
         assert len(shape) == expected_ndim
         return shape[2]
 
-    def _get_image_pair(
-        self,
-        path: Path,
-        labels: Path,
-        slice_idx: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return (
-            self._sliced_sample(path, slice_idx),
-            self._sliced_sample(labels, slice_idx),
-        )
-
     @staticmethod
     def _sliced_sample(path: Path, slice_idx: int, axis: int = 2) -> np.ndarray:
         img = nib.load(path)  # this only loads the header
@@ -244,7 +219,8 @@ class CTSpine1K:
 
         """
         if self._volumetric:
-            path, labels, _ = self._sorted_lookup[index]
+            key = self._sorted_lookup()[index]
+            path, labels, _ = self._lookup[key]
             return (
                 self._volumetric_sample(path),
                 self._volumetric_sample(labels),
@@ -256,7 +232,10 @@ class CTSpine1K:
             upper = lower + value
 
             if lower <= index < upper:
-                return self._get_image_pair(path, labels, index - lower)
+                return (
+                    self._sliced_sample(path, index - lower),
+                    self._sliced_sample(labels, index - lower),
+                )
 
             lower = upper
 
