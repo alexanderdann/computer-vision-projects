@@ -42,12 +42,12 @@ from tqdm.auto import tqdm
 
 URL = "https://drive.google.com/drive/folders/1Acyuu7ZmbjnS4mkJRdiUfkXx5SBta4EM"
 FOLDER_ID = URL.split("/")[-1]  # shortcut to get ID
-LOCAL_DIR = Path(__file__).parent / "shareable"
+LOCAL_DIR = Path(__file__).parent / "data" / "shareable"
 
 
 def download_from_google_drive(
     output_dir: Path,
-    max_workers: int = 8,
+    max_workers: int = 4,
     max_attempts: int = 5,
 ) -> None:
     """Download the data CTSpine1K dataset from Google Drive.
@@ -98,7 +98,7 @@ def download_from_google_drive(
                 attempt += 1
 
 
-def _download_file_from_google_drive_link(  # noqa: C901, PLR0911, PLR0912, PLR0914, PLR0915
+def _download_file_from_google_drive_link(  # noqa: C901, PLR0912, PLR0914, PLR0915
     shareable_link: str,
     destination_folder: Path,
 ) -> Path | None:
@@ -264,24 +264,6 @@ def _download_file_from_google_drive_link(  # noqa: C901, PLR0911, PLR0912, PLR0
 
             print("Warning: Received HTML instead of file content.")
 
-    # Last resort for very stubborn files - try multiple approaches
-    print("All standard methods failed. Trying last resort methods...")
-    # Try cookies and direct download
-    headers["Cookie"] = "download_warning_13058876669=yes; "
-
-    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    response = session.get(download_url, headers=headers, stream=True)
-
-    if response.status_code == success_code:
-        content_type = response.headers.get("Content-Type", "")
-
-        # Only save if we're reasonably sure it's the actual file (not HTML)
-        if "text/html" not in content_type:
-            if not filename:
-                filename = f"file_{file_id}"
-
-            return _save_response_to_file(response, destination_folder / filename)
-
     print(f"All download methods failed for file ID {file_id}")
     return None
 
@@ -353,21 +335,17 @@ def _save_response_to_file(
 
 
 def _generate_workload(shareable_dir: Path, output_dir: Path) -> dict[str, Path]:
-    data_glob = sorted((shareable_dir / "data").iterdir())[-2:]
-    label_glob = sorted((shareable_dir / "label").iterdir())[-2:]
+    data_glob = sorted((shareable_dir / "data").iterdir())
+    label_glob = sorted((shareable_dir / "label").iterdir())
     links_dict: dict[str, list[Path]] = {"data": data_glob, "label": label_glob}
 
     workload = {}
     for key, links_files in links_dict.items():
         for links_file in links_files:
-            path = output_dir / links_file.stem / key
+            path = output_dir / key / links_file.stem
             path.mkdir(exist_ok=True, parents=True)
 
             for link in links_file.read_text().split(", "):
                 workload[link] = path
 
     return workload
-
-
-if __name__ == "__main__":
-    download_from_google_drive(Path.cwd() / "test")
