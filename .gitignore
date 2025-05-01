@@ -175,3 +175,9 @@ cython_debug/
 
 # Weights and Biases
 wandb
+
+# Medical data
+*.nii.gz
+
+# apple/mac
+.DS_Store
