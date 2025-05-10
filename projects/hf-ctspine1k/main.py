@@ -5,9 +5,81 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+import datasets
 import nibabel as nib
 import numpy as np
 from download import download_from_google_drive
+
+_CITATION = """
+@misc{deng2024ctspine1klargescaledatasetspinal,
+      title={CTSpine1K: A Large-Scale Dataset for Spinal Vertebrae Segmentation in Computed Tomography},
+      author={Yang Deng and Ce Wang and Yuan Hui and Qian Li and Jun Li and Shiwei Luo and Mengke Sun and Quan Quan and Shuxin Yang and You Hao and Pengbo Liu and Honghu Xiao and Chunpeng Zhao and Xinbao Wu and S. Kevin Zhou},
+      year={2024},
+      eprint={2105.14711},
+      archivePrefix={arXiv},
+      primaryClass={eess.IV},
+      url={https://arxiv.org/abs/2105.14711},
+}
+"""  # noqa: E501
+
+_DESCRIPTION = """
+Spine-related diseases have high morbidity and cause a huge burden of social cost.
+Spine imaging is an essential tool for noninvasively visualizing and assessing spinal
+pathology. Segmenting vertebrae in computed tomography (CT) images is the basis of
+quantitative medical image analysis for clinical diagnosis and surgery planning of
+spine diseases. Current publicly available annotated datasets on spinal vertebrae are
+small in size. Due to the lack of a large-scale annotated spine image dataset, the
+mainstream deep learning-based segmentation methods, which are data-driven, are heavily
+restricted. In this paper, we introduce a large-scale spine CT dataset, called CTSpine1K
+curated from multiple sources for vertebra segmentation, which contains 1,005 CT volumes
+with over 11,100 labeled vertebrae belonging to different spinal conditions. Based on
+this dataset, we conduct several spinal vertebrae segmentation experiments to set the
+first benchmark. We believe that this large-scale dataset will facilitate further
+research in many spine-related image analysis tasks, including but not limited to
+vertebrae segmentation, labeling, 3D spine reconstruction from biplanar radiographs,
+image super-resolution, and enhancement.
+"""
+
+_HOMEPAGE = "https://github.com/MIRACLE-Center/CTSpine1K"
+
+_LICENSE = "CC-BY-NC-SA"
+
+
+class CTSpine1KBuilderConfig(datasets.BuilderConfig):
+    """Configuration for the dataset CTSpine1K."""
+
+    def __init__(
+        self,
+        split: Literal["training", "validation", "test"],
+        *,
+        volumetric: bool,
+        download: bool,
+        **kwargs: dict,
+    ) -> None:
+        """C'tor if the CTSpine1KBuilderConfig.
+
+        Args:
+            split: what split of the data should be used for this instance.
+            volumetric: whether we want to use 3D or 2D data.
+            download: if set to True the whole data is first fetched from
+                Google Drive before it is accessible via this wrapper. Data
+                is written to the same folder as specified by cache_dir.
+                If the data was already loaded once, you can set this to False
+                and we assume all data can be found in cache_dir.
+            kwargs: parameters which can be used to overwrite the BuilderConfig
+                and are forwarded to the super class call.
+
+        """
+        super().__init__(version=datasets.Version("1.0.0"), **kwargs)
+
+        self.citation = _CITATION
+        self.description = _DESCRIPTION
+        self.homepage = _HOMEPAGE
+        self.license = _LICENSE
+
+        self.split = split
+        self.volumetric = volumetric
+        self.download = download
 
 
 class CTSpine1K:
