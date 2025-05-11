@@ -3,12 +3,14 @@
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 import datasets
 import nibabel as nib
 import numpy as np
+from datasets import DownloadManager
 from download import download_from_google_drive
+from huggingface_hub import HfApi
 
 _CITATION = """
 @misc{deng2024ctspine1klargescaledatasetspinal,
@@ -45,52 +47,63 @@ _HOMEPAGE = "https://github.com/MIRACLE-Center/CTSpine1K"
 _LICENSE = "CC-BY-NC-SA"
 
 
+HF_API = HfApi()
+
+_URLS = HF_API.list_repo_files(
+    "alexanderdann/CTSpine1K",
+    repo_type="dataset",
+)
+
+
 class CTSpine1KBuilderConfig(datasets.BuilderConfig):
-    """Configuration for the dataset CTSpine1K."""
+    """BuilderConfig for the dataset CTSpine1K."""
 
     def __init__(
         self,
-        split: Literal["training", "validation", "test"],
         *,
         volumetric: bool,
-        download: bool,
         **kwargs: dict,
     ) -> None:
         """C'tor if the CTSpine1KBuilderConfig.
 
         Args:
-            split: what split of the data should be used for this instance.
             volumetric: whether we want to use 3D or 2D data.
-            download: if set to True the whole data is first fetched from
-                Google Drive before it is accessible via this wrapper. Data
-                is written to the same folder as specified by cache_dir.
-                If the data was already loaded once, you can set this to False
-                and we assume all data can be found in cache_dir.
             kwargs: parameters which can be used to overwrite the BuilderConfig
                 and are forwarded to the super class call.
 
         """
-        super().__init__(version=datasets.Version("1.0.0"), **kwargs)
+        super().__init__(**kwargs)
 
         self.citation = _CITATION
-        self.description = _DESCRIPTION
         self.homepage = _HOMEPAGE
         self.license = _LICENSE
 
-        self.split = split
         self.volumetric = volumetric
-        self.download = download
 
 
-class CTSpine1K:
-    """Dataloading iterator for the CTSpine1K dataset."""
+class CTSpine1K(datasets.GeneratorBasedBuilder):
+    """Dataloading generator for the CTSpine1K dataset."""
+
+    BUILDER_CONFIGS: ClassVar[list[CTSpine1KBuilderConfig]] = [
+        CTSpine1KBuilderConfig(
+            name="3d",
+            volumetric=True,
+            description="3D volumes of CT spine scans",
+            version=datasets.Version("1.0.0"),
+        ),
+        CTSpine1KBuilderConfig(
+            name="2d",
+            volumetric=False,
+            description="2D axial slices of CT spine scans",
+            version=datasets.Version("1.0.0"),
+        ),
+    ]
 
     def __init__(
         self,
         cache_dir: Path,
         split: Literal["training", "validation", "test"],
         *,
-        volumetric: bool = False,
         download: bool = False,
         **download_kwargs: dict,
     ) -> None:
@@ -99,7 +112,6 @@ class CTSpine1K:
         Args:
             cache_dir: points to the directory where the data is downloaded.
             split: what split of the data should be used for this instance.
-            volumetric: whether we want to use 3D or 2D data.
             download: if set to True the whole data is first fetched from
                 Google Drive before it is accessible via this wrapper. Data
                 is written to the same folder as specified by cache_dir.
@@ -113,7 +125,6 @@ class CTSpine1K:
         if download:
             download_from_google_drive(cache_dir, **download_kwargs)
 
-        self._volumetric: bool = volumetric
         self._split: str = split
 
         self._loaded_split = self._load_split(self._split)
@@ -128,7 +139,7 @@ class CTSpine1K:
     @property
     def volumetric(self) -> bool:
         """Mode indicating whether we use 3D or 2D data."""
-        return self._volumetric
+        return self.config.volumetric
 
     def __len__(self) -> int:
         """Length attribute of the class.
@@ -137,30 +148,74 @@ class CTSpine1K:
             Return the amount of samples based on mode.
 
         """
-        if self.volumetric:
+        if self.config.volumetric:
             return len(self._lookup)
 
         return sum(elem[2] for elem in self._lookup.values())
 
+    def _info(self) -> datasets.DatasetInfo:
+        if self.config.volumetric:
+            features = datasets.Features(
+                {
+                    "image": datasets.Array3D(
+                        shape=(None, None, None),
+                        dtype="float32",
+                    ),
+                    "segmentation": datasets.Array3D(
+                        shape=(None, None, None),
+                        dtype="int32",
+                    ),
+                    "patient_id": datasets.Value("string"),
+                },
+            )
+        else:
+            features = datasets.Features(
+                {
+                    "image": datasets.Array2D(shape=(None, None), dtype="float32"),
+                    "segmentation": datasets.Array2D(shape=(None, None), dtype="int32"),
+                    "patient_id": datasets.Value("string"),
+                },
+            )
+
+        return datasets.DatasetInfo(
+            description=_DESCRIPTION,
+            features=features,
+            homepage=_HOMEPAGE,
+            citation=_CITATION,
+            license=_LICENSE,
+            # Add citation and other metadata here
+        )
+
+    def _split_generators(self, dl_manager: DownloadManager):
+        split_file_idx = _URLS.index("data_split.txt")
+        downloaded_files = dl_manager.download(_URLS)
+
+        training, validation, test = self._load_split(downloaded_files[split_file_idx])
+
+        if dl_manager.download_config.cache_dir is None:
+            msg = "Specify a valid location as the dataset is very large."
+            raise ValueError(msg)
+
+        download_from_google_drive(
+            output_dir=dl_manager.download_config.cache_dir,
+            downloaded_files=downloaded_files,
+            max_attempts=dl_manager.download_config.max_retries,
+            max_workers=dl_manager.download_config.num_proc,
+        )
+
     @staticmethod
-    def _load_split(split: str) -> list[str]:
+    def _load_split(file: str, split: str) -> tuple[list[str]]:
         """Load the training, validation and test split.
 
         Currently this component assumes that the names always come in pairs
         with identical names in the data and labels. The only difference is the
         additional '_labels' after the name off the file.
 
-        Raises:
-            ValueError: split string needs to be one of
-                [training, validation, test], otherwise
-                the error is thrown.
-
         Returns:
-            List containing the names of the files for the
-            relevant split.
+            Tuples containg the lists for each split.
 
         """
-        split_file = Path(__file__).parent / "data" / "data_split.txt"
+        split_file = Path(file)
         split_data = split_file.read_text()
         split_list = split_data.split("\n")
 
@@ -172,20 +227,11 @@ class CTSpine1K:
         test_public_ident = split_list.index("test_public:")
         test_private_ident = split_list.index("test_private:")
 
-        if split == "training":
-            return split_list[train_ident + 1 : test_public_ident]
+        training = split_list[train_ident + 1 : test_public_ident]
+        validation = split_list[test_public_ident + 1 : test_private_ident]
+        test = split_list[test_private_ident + 1 :]
 
-        if split == "validation":
-            return split_list[test_public_ident + 1 : test_private_ident]
-
-        if split == "test":
-            return split_list[test_private_ident + 1 :]
-
-        msg = (
-            f"Got an invalid split: {split}. "
-            "Ensure value is one of training, validation, test"
-        )
-        raise ValueError(msg)
+        return training, validation, test
 
     def _validate_check(self, cache_dir: Path, files: list[str]) -> dict:
         stems = [file.split(".nii.gz")[0] for file in files]

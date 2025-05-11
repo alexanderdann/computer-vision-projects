@@ -42,11 +42,11 @@ from tqdm.auto import tqdm
 
 URL = "https://drive.google.com/drive/folders/1Acyuu7ZmbjnS4mkJRdiUfkXx5SBta4EM"
 FOLDER_ID = URL.split("/")[-1]  # shortcut to get ID
-LOCAL_DIR = Path(__file__).parent / "data" / "shareable"
 
 
 def download_from_google_drive(
     output_dir: Path,
+    downloaded_files: list,
     max_workers: int = 4,
     max_attempts: int = 5,
 ) -> None:
@@ -55,22 +55,18 @@ def download_from_google_drive(
     Args:
         output_dir: where to write the data. Mind to use the exact directory to
             when specifying the `cache_dir` later on.
+        downloaded_files: files downloaded from hugging face. These should also
+            contain data related to the shareable files with the links to the
+            actual files.
         max_workers: how many threads will load the data concurrently.
         max_attempts: how often we try to download in the case of a failure.
 
-    Raises:
-        RuntimeError: violation of assumption about location of .txt files
-            with shareable links.
-
     """
-    if not LOCAL_DIR.is_dir():
-        msg = (
-            f"Expected directory {LOCAL_DIR!s} to exist on the same level as script. "
-            "Ensure directory `shareable` contains all .txt files with links to GDrive."
-        )
-        raise RuntimeError(msg)
+    data_key = "shareable"
+    shareables: list[str] = [file for file in downloaded_files if data_key in file]
+    data_dir = Path(shareables[0].split()) / data_key
 
-    workload = _generate_workload(LOCAL_DIR, output_dir)
+    workload = _generate_workload(data_dir, output_dir)
     failed_links = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -334,7 +330,10 @@ def _save_response_to_file(
     return destination_path
 
 
-def _generate_workload(shareable_dir: Path, output_dir: Path) -> dict[str, Path]:
+def _generate_workload(
+    shareable_dir: Path,
+    output_dir: Path,
+) -> dict[str, Path]:
     data_glob = sorted((shareable_dir / "data").iterdir())
     label_glob = sorted((shareable_dir / "label").iterdir())
     links_dict: dict[str, list[Path]] = {"data": data_glob, "label": label_glob}
