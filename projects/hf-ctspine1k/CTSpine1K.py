@@ -280,7 +280,7 @@ class CTSpine1K(datasets.GeneratorBasedBuilder):
                     },
                 )
             else:
-                for idx in range(image.shape[2]):  # iterate over axial slices
+                for idx in range(image.shape[0]):  # iterate over axial slices
                     yield (
                         patient_id + f"_{idx}",
                         {
