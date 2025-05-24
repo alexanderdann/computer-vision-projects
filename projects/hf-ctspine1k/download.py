@@ -64,23 +64,35 @@ def download_from_google_drive(
     """
     data_key = "shareable"
     shareables: list[str] = [file for file in downloaded_files if data_key in file]
-    data_dir = Path(shareables[0].split()) / data_key
+    data_dir = Path(shareables[0].split(data_key)[0]) / data_key
 
     workload = _generate_workload(data_dir, output_dir)
     failed_links = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit download tasks to the executor
-        future_to_link = {
-            executor.submit(_download_file_from_google_drive_link, link, path): link
-            for link, path in list(workload.items())
-        }
+    with (
+        tqdm(total=len(workload), desc="Downloading files") as pbar,
+        concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        # Map the download function across all links
+        future_to_link = {}
+
+        for link, path in workload.items():
+            future = executor.submit(
+                _download_file_from_google_drive_link,
+                link,
+                path,
+            )
+            future_to_link[future] = link
 
         # Process results as they complete
         for future in concurrent.futures.as_completed(future_to_link):
             link = future_to_link[future]
-            downloaded_file_path = future.result()
-            if not downloaded_file_path:
+            result = future.result()
+
+            # Update progress bar for each completed file
+            pbar.update(1)
+
+            if not result:
                 failed_links.append(link)
 
     if failed_links:
@@ -261,6 +273,10 @@ def _download_file_from_google_drive_link(  # noqa: C901, PLR0912, PLR0914, PLR0
             print("Warning: Received HTML instead of file content.")
 
     print(f"All download methods failed for file ID {file_id}")
+
+    with open(f"debug_html_{file_id}.html", "wb") as debug_file:
+        debug_file.write(response.content)
+
     return None
 
 
@@ -287,30 +303,10 @@ def _save_response_to_file(
     """
     with destination_path.open("wb") as f:
         block_size = 8192
-        total_size = int(response.headers.get("content-length", 0))
 
-        if total_size > 0:
-            progress_bar = tqdm(
-                total=total_size,
-                unit="B",
-                unit_scale=True,
-                desc=f"Downloading {destination_path!s}",
-            )
-
-            for chunk in response.iter_content(chunk_size=block_size):
-                if chunk:
-                    f.write(chunk)
-                    progress_bar.update(len(chunk))
-
-            progress_bar.close()
-        else:
-            # If we don't know the total size, download without progress bar
-            print(
-                f"Downloading {destination_path!s}...",
-            )
-            for chunk in response.iter_content(chunk_size=block_size):
-                if chunk:
-                    f.write(chunk)
+        for chunk in response.iter_content(chunk_size=block_size):
+            if chunk:
+                f.write(chunk)
 
     # Verify the downloaded file is not tiny (which would suggest an error)
     file_size = destination_path.stat().st_size
