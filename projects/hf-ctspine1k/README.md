@@ -1,3 +1,12 @@
+---
+tags:
+- medical
+- image
+- 3d
+size_categories:
+- 1K<n<10K
+- 100K<n<1M
+---
 # CTSpine1K: A Large-Scale Dataset for Spinal Vertebrae Segmentation in Computed Tomography
 
 ![License](https://img.shields.io/badge/License-CC--BY--NC--SA-blue.svg)
@@ -69,7 +78,20 @@ You're training models repeatedly on the same data
 
 This approach downloads the dataset files as you see them on Hugging Face. This is useful when you need only parts of the data, want to explore the structure, or already have logic to read and process `.nii.gz` files. 
 
+```python
+from huggingface_hub import snapshot_download
 
+# Download entire repository 
+local_dir = snapshot_download(
+    repo_id="alexanderdann/CTSpine1K",
+    repo_type="dataset",
+    cache_dir="/your/cache/dir"  # optional
+)
+
+# Now you can access files directly:
+# local_dir/rawdata/volumes/[dataset]/*.nii.gz
+# local_dir/rawdata/labels/[dataset]/*_seg.nii.gz
+```
 
 This offers maximum flexibility since you can also easily filter specific files from `urls` and download these. Mind to convert these to actual urls before downloading.
 
