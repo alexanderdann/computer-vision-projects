@@ -256,6 +256,14 @@ class SAM2Finetuning:
         points,
         labels,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        _, points, labels, _ = predictor._prep_prompts(  # noqa: SLF001
+            points,
+            labels,
+            box=None,
+            mask_logits=None,
+            normalize_coords=True,
+            img_idx=-1,
+        )
         sparse_embeddings, dense_embeddings = predictor.model.sam_prompt_encoder(
             points=(points, labels),
             boxes=None,
