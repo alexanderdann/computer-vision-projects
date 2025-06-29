@@ -13,8 +13,10 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from training.loss_fns import iou_loss, sigmoid_focal_loss
 
-import nnx.data
-from nnx.data.ctspine1k.dataset import CTSpine1K, CUDALoader, LoadingMode, SAMAdapter
+import nnx
+from nnx.data import DataSplit, LoadingMode
+from nnx.data.adapter import SAMAdapter
+from nnx.data.datasets.vision import CTSpine1K
 
 
 @nnx.configurable
@@ -58,8 +60,8 @@ class SAM2Finetuning:
     def __init__(
         self,
         config: SAM2FinetuningConfig,
-        t_dataloader: DataLoader | CUDALoader,
-        v_dataloader: DataLoader | CUDALoader,
+        t_dataloader: DataLoader,
+        v_dataloader: DataLoader,
         *,
         from_checkpoint: bool = False,
         with_wandb: bool = False,
@@ -388,16 +390,10 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--training_dir",
+        "--cache_dir",
         type=str,
         required=True,
-        help="Directory containing the CTSpine1K training dataset",
-    )
-    parser.add_argument(
-        "--validation_dir",
-        type=str,
-        required=True,
-        help="Directory containing the CTSpine1K validation dataset",
+        help="Directory containing the CTSpine1K dataset",
     )
     parser.add_argument(
         "--with_wandb",
@@ -423,17 +419,21 @@ if __name__ == "__main__":
 
     config = SAM2FinetuningConfig()
 
-    training_dir = Path(args.training_dir)
-    validation_dir = Path(args.validation_dir)
+    cache_dir = Path(args.cache_dir)
 
     t_dataset = SAMAdapter(
-        dataset=CTSpine1K(cache_dir=training_dir, loading_mode=LoadingMode.PRELOAD_RAM),
+        dataset=CTSpine1K(
+            cache_dir=cache_dir,
+            loading_mode=LoadingMode.ON_DEMAND,
+            split=DataSplit.TRAINING,
+        ),
         image_size=config.image_size,
     )
     v_dataset = SAMAdapter(
         dataset=CTSpine1K(
-            cache_dir=validation_dir,
-            loading_mode=LoadingMode.PRELOAD_RAM,
+            cache_dir=cache_dir,
+            loading_mode=LoadingMode.ON_DEMAND,
+            split=DataSplit.VALIDATION,
         ),
         image_size=config.image_size,
     )
@@ -450,7 +450,7 @@ if __name__ == "__main__":
         shuffle=config.shuffle,
     )
 
-    v_dataloader = CUDALoader(
+    v_dataloader = DataLoader(
         dataset=v_dataset,
         batch_size=config.validation_size,
         collate_fn=v_dataset.collate_fn,
