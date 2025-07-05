@@ -1,4 +1,4 @@
-"""Wrapper to load the actual data using Python."""
+"""Wrapper to load the actual data using Python."""  # noqa: INP001
 
 from collections.abc import Generator
 from pathlib import Path

@@ -29,7 +29,7 @@ This module is designed to be the first step in a data preparation pipeline, ens
 that researchers can quickly obtain the CTSpine1K dataset programmatically without
 manual intervention, regardless of their computing environment.
 
-"""
+"""  # noqa: INP001
 
 import concurrent.futures
 import re
@@ -274,7 +274,7 @@ def _download_file_from_google_drive_link(  # noqa: C901, PLR0912, PLR0914, PLR0
 
     print(f"All download methods failed for file ID {file_id}")
 
-    with open(f"debug_html_{file_id}.html", "wb") as debug_file:
+    with open(f"debug_html_{file_id}.html", "wb") as debug_file:  # noqa: FURB103, PTH123
         debug_file.write(response.content)
 
     return None
@@ -298,7 +298,8 @@ def _save_response_to_file(
     """Save the content from the drive to destination.
 
     Returns:
-        In the case of failure it is None, otherwise the Path to where the data was written.
+        In the case of failure it is None, otherwise the Path to where the
+        data was written.
 
     """
     with destination_path.open("wb") as f:
