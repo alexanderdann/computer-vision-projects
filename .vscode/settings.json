@@ -1,13 +1,13 @@
 {
-    "[python]":{
+    "[python]": {
         "diffEditor.ignoreTrimWhitespace": false,
         "editor.defaultColorDecorators": "always",
         "editor.wordBasedSuggestions": "off",
         "editor.formatOnType": false,
+        "editor.formatOnSave": true,
         "editor.codeActionsOnSave": {
             "source.fixAll": "explicit",
-            "source.organizeImports": "explicit",
-            "editor.formatOnSave": "explicit"
+            "source.organizeImports": "explicit"
         }
     }
 }

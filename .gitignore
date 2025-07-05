@@ -172,3 +172,12 @@ cython_debug/
 
 # torchvision data
 *ubyte*
+
+# Weights and Biases
+wandb
+
+# Medical data
+*.nii.gz
+
+# apple/mac
+.DS_Store
