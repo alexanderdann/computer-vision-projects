@@ -27,6 +27,7 @@ class CTSpine1K:
         Args:
             cache_dir: points to the directory where the data is downloaded.
             loading_mode: loading logic of data
+            split: what part of the data we want to use.
             volumetric: whether we want to use 3D or 2D data.
 
         """
@@ -103,11 +104,11 @@ class CTSpine1K:
         raise ValueError(msg)
 
     def _validate_check(self, cache_dir: Path, split: DataSplit) -> dict:
-        """Validate that all data is downloaded or atleast only take data which fulfills our assumptions.
+        """Validate that all data is downloaded which fulfills our assumptions.
 
         The idea is that due to the naming of the files we will have a perfect match
-        The first half contains the input nii.gz and the second half has the correspondin
-        files with the additonal '_seg.nii.gz'.
+        The first half contains the input nii.gz and the second half has the
+        corresponding files with the additonal '_seg.nii.gz'.
 
         Raises:
             ValueError: In the case where we cannot find the data we want.
